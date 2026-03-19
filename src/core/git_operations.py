@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from src.constants import PYC_SKIP_DIRS
+from src.core.logger import log
 
 
 def pyc_cleanup(repo_path: str) -> int:
@@ -37,16 +38,19 @@ def pyc_cleanup(repo_path: str) -> int:
 
 
 def _run_git(repo_path: str, *args, timeout: int = 30) -> tuple[bool, str]:
+    cmd = ["git", "-C", repo_path, *args]
+    log.debug("git %s", " ".join(args))
     try:
-        r = subprocess.run(
-            ["git", "-C", repo_path, *args],
-            capture_output=True, text=True, timeout=timeout,
-        )
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         output = (r.stdout + r.stderr).strip()
+        if r.returncode != 0:
+            log.warning("git %s failed (rc=%d): %s", args[0], r.returncode, output[:200])
         return r.returncode == 0, output
     except subprocess.TimeoutExpired:
+        log.error("git %s timed out after %ds", args[0], timeout)
         return False, "Timed out"
     except Exception as e:
+        log.error("git %s error: %s", args[0], e)
         return False, str(e)
 
 
@@ -101,9 +105,15 @@ class GitWorker(QThread):
         self.operation = operation
         self.repos = repos  # list of RepoInfo or paths
         self.message = message
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
 
     def run(self):
         for repo in self.repos:
+            if self._cancelled:
+                break
             path = repo.path if hasattr(repo, "path") else str(repo)
             label = repo.label if hasattr(repo, "label") else Path(path).name
 

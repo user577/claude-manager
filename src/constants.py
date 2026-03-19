@@ -6,7 +6,7 @@ APP_NAME = "ClaudeManager"
 APP_DISPLAY_NAME = "Claude Manager"
 APP_VERSION = "1.0.0"
 
-DEFAULT_GITHUB_DIR = Path("C:/Users/user/Documents/GitHub")
+DEFAULT_GITHUB_DIR = Path.home() / "Documents" / "GitHub"
 
 # Writable config location
 CONFIG_DIR = Path(os.environ.get("LOCALAPPDATA", "")) / APP_NAME

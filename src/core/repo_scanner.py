@@ -1,7 +1,7 @@
 import subprocess
 from dataclasses import dataclass
 
-from PySide6.QtCore import QObject, Signal, QThread
+from PySide6.QtCore import Signal, QThread
 
 from src.config.settings import RepoInfo
 
@@ -66,21 +66,6 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
         status.error = str(e)
 
     return status
-
-
-class RepoScannerWorker(QObject):
-    status_updated = Signal(object)  # RepoStatus
-    scan_complete = Signal()
-
-    def __init__(self, repos: list[RepoInfo]):
-        super().__init__()
-        self.repos = repos
-
-    def run(self):
-        for repo in self.repos:
-            result = scan_one(repo)
-            self.status_updated.emit(result)
-        self.scan_complete.emit()
 
 
 class RepoScannerThread(QThread):

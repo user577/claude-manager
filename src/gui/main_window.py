@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QToolBar, QPushButton, QWidget,
 )
@@ -23,11 +23,19 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(DARK_THEME)
 
-        # Restore geometry
-        self.setGeometry(
-            settings.window_x, settings.window_y,
-            settings.window_width, settings.window_height,
-        )
+        # Restore geometry (with safety check for off-screen)
+        from PySide6.QtWidgets import QApplication
+        screen_geo = QApplication.primaryScreen().availableGeometry()
+        x = settings.window_x
+        y = settings.window_y
+        w = settings.window_width
+        h = settings.window_height
+        # Reset to center if saved position is off-screen
+        if (x + w < 50 or x > screen_geo.width() - 50
+                or y + h < 50 or y > screen_geo.height() - 50):
+            x = (screen_geo.width() - w) // 2
+            y = (screen_geo.height() - h) // 2
+        self.setGeometry(x, y, w, h)
 
         # --- Toolbar ---
         toolbar = QToolBar()
@@ -79,6 +87,13 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self._git_scanned = False
 
+        # Keyboard shortcuts
+        QShortcut(QKeySequence("Ctrl+L"), self, self.launcher_panel._on_launch)
+        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self.tabs.setCurrentIndex(0))
+        QShortcut(QKeySequence("Ctrl+2"), self, lambda: self.tabs.setCurrentIndex(1))
+        QShortcut(QKeySequence("Ctrl+R"), self, self._refresh_git)
+        QShortcut(QKeySequence("Ctrl+Return"), self, self.git_panel._on_commit)
+
     def _make_toolbar_label(self) -> QWidget:
         from PySide6.QtWidgets import QLabel
         lbl = QLabel(f"  {APP_DISPLAY_NAME}")
@@ -103,6 +118,11 @@ class MainWindow(QMainWindow):
             self.launcher_panel.refresh_repos()
             self.git_panel._build_cards()
             self._git_scanned = False
+
+    def _refresh_git(self):
+        self.tabs.setCurrentIndex(1)
+        self.git_panel.scan_all()
+        self._git_scanned = True
 
     def _on_tab_changed(self, index: int):
         if index == 1 and not self._git_scanned:
