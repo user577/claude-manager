@@ -96,11 +96,55 @@ class LauncherPanel(QWidget):
         mode_row.addWidget(self.mode_combo, 1)
         layout.addLayout(mode_row)
 
-        # --- Launch button ---
+        # --- Model selection row ---
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Model:"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(["Default", "Sonnet", "Opus", "Haiku"])
+        model_map = {"default": 0, "sonnet": 1, "opus": 2, "haiku": 3}
+        self.model_combo.setCurrentIndex(model_map.get(self.settings.model, 0))
+        model_row.addWidget(self.model_combo, 1)
+        layout.addLayout(model_row)
+
+        # --- Session handling row ---
+        session_row = QHBoxLayout()
+        session_row.addWidget(QLabel("Session:"))
+        self.session_combo = QComboBox()
+        self.session_combo.addItems([
+            "New session",
+            "Continue last",
+            "Named session (per repo)",
+        ])
+        session_map = {"new": 0, "continue": 1, "named": 2}
+        self.session_combo.setCurrentIndex(session_map.get(self.settings.session_mode, 0))
+        session_row.addWidget(self.session_combo, 1)
+        layout.addLayout(session_row)
+
+        # --- Initial prompt row ---
+        prompt_row = QHBoxLayout()
+        prompt_row.addWidget(QLabel("Initial prompt:"))
+        self.prompt_edit = QLineEdit()
+        self.prompt_edit.setPlaceholderText("Optional prompt to start with...")
+        self.prompt_edit.setClearButtonEnabled(True)
+        self.prompt_edit.setText(self.settings.initial_prompt)
+        prompt_row.addWidget(self.prompt_edit, 1)
+        layout.addLayout(prompt_row)
+
+        # --- Launch button row ---
+        launch_row = QHBoxLayout()
+
+        self.worktree_check = QCheckBox("Use worktree")
+        self.worktree_check.setChecked(self.settings.use_worktree)
+        launch_row.addWidget(self.worktree_check)
+
+        launch_row.addStretch()
+
         self.launch_btn = QPushButton("Launch Claude")
         self.launch_btn.setObjectName("launchBtn")
         self.launch_btn.clicked.connect(self._on_launch)
-        layout.addWidget(self.launch_btn)
+        launch_row.addWidget(self.launch_btn)
+
+        layout.addLayout(launch_row)
 
         # --- Progress ---
         self.progress = QProgressBar()
@@ -168,11 +212,23 @@ class LauncherPanel(QWidget):
         idx = self.mode_combo.currentIndex()
         return ["default", "acceptEdits", "auto", "bypassPermissions", "plan"][idx]
 
+    def _get_model(self) -> str:
+        idx = self.model_combo.currentIndex()
+        return ["default", "sonnet", "opus", "haiku"][idx]
+
+    def _get_session_mode(self) -> str:
+        idx = self.session_combo.currentIndex()
+        return ["new", "continue", "named"][idx]
+
     def save_state(self):
         self._on_check_changed()
         self.settings.instance_count = self.count_spin.value()
         self.settings.layout = self._get_layout_key()
         self.settings.permission_mode = self._get_permission_mode()
+        self.settings.model = self._get_model()
+        self.settings.initial_prompt = self.prompt_edit.text()
+        self.settings.use_worktree = self.worktree_check.isChecked()
+        self.settings.session_mode = self._get_session_mode()
 
     def _on_launch(self):
         self.save_state()
@@ -192,7 +248,18 @@ class LauncherPanel(QWidget):
         self.log.log_info(f"Launching {actual_count} instances...")
 
         mode = self._get_permission_mode()
-        self._worker = LaunchWorker(enabled, layout, count, mode, parent=self)
+        model = self._get_model()
+        initial_prompt = self.prompt_edit.text()
+        use_worktree = self.worktree_check.isChecked()
+        session_mode = self._get_session_mode()
+        self._worker = LaunchWorker(
+            enabled, layout, count, mode,
+            model=model,
+            initial_prompt=initial_prompt,
+            use_worktree=use_worktree,
+            session_mode=session_mode,
+            parent=self,
+        )
         self._worker.status.connect(self._on_launch_status)
         self._worker.finished_ok.connect(self._launch_done)
         self._worker.finished_err.connect(self._launch_error)
