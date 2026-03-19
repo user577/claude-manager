@@ -51,6 +51,18 @@ class SettingsDialog(QDialog):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
+        # --- Tag editor ---
+        tag_row = QHBoxLayout()
+        tag_row.addWidget(QLabel("Tags:"))
+        self.tag_edit = QLineEdit()
+        self.tag_edit.setPlaceholderText("Tags (comma-separated)...")
+        self.tag_edit.setEnabled(False)
+        tag_row.addWidget(self.tag_edit, 1)
+        layout.addLayout(tag_row)
+
+        self.repo_list.currentRowChanged.connect(self._on_repo_selected)
+        self.tag_edit.editingFinished.connect(self._on_tags_changed)
+
         # --- OK / Cancel ---
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
@@ -98,6 +110,27 @@ class SettingsDialog(QDialog):
         added = len(self.settings.repos) - old_count
         if added > 0:
             self.setWindowTitle(f"Settings — discovered {added} new repos")
+
+    def _on_repo_selected(self, row: int):
+        if row < 0 or row >= len(self.settings.repos):
+            self.tag_edit.clear()
+            self.tag_edit.setEnabled(False)
+            return
+        self.tag_edit.setEnabled(True)
+        repo = self.settings.repos[row]
+        self.tag_edit.setText(", ".join(repo.tags))
+
+    def _on_tags_changed(self):
+        row = self.repo_list.currentRow()
+        if row < 0 or row >= len(self.settings.repos):
+            return
+        raw = self.tag_edit.text()
+        tags = sorted(set(
+            t.strip().lower() for t in raw.split(",") if t.strip()
+        ))
+        self.settings.repos[row].tags = tags
+        # Normalize display
+        self.tag_edit.setText(", ".join(tags))
 
     def get_github_dir(self) -> str:
         return self.dir_edit.text()
