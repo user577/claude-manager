@@ -24,6 +24,8 @@ class Settings:
     instance_count: int = 4
     permission_mode: str = "default"
     model: str = "default"
+    backend: str = "cloud"
+    local_model: str = ""
     initial_prompt: str = ""
     use_worktree: bool = False
     session_mode: str = "new"
@@ -49,6 +51,8 @@ class Settings:
                 instance_count=data.get("instance_count", 4),
                 permission_mode=data.get("permission_mode", "default"),
                 model=data.get("model", "default"),
+                backend=data.get("backend", "cloud"),
+                local_model=data.get("local_model", ""),
                 initial_prompt=data.get("initial_prompt", ""),
                 use_worktree=data.get("use_worktree", False),
                 session_mode=data.get("session_mode", "new"),
@@ -70,6 +74,8 @@ class Settings:
             "instance_count": self.instance_count,
             "permission_mode": self.permission_mode,
             "model": self.model,
+            "backend": self.backend,
+            "local_model": self.local_model,
             "initial_prompt": self.initial_prompt,
             "use_worktree": self.use_worktree,
             "session_mode": self.session_mode,

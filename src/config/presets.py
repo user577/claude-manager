@@ -18,6 +18,8 @@ class Preset:
     layout: str = "grid_2x2"
     permission_mode: str = "default"
     model: str = "default"
+    backend: str = "cloud"
+    local_model: str = ""
     session_mode: str = "new"
     initial_prompt: str = ""
     use_worktree: bool = False
