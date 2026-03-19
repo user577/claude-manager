@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Manager — Local Ollama Setup Guide</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #181825;
+    --card: #313244;
+    --border: #45475a;
+    --text: #cdd6f4;
+    --subtext: #a6adc8;
+    --mauve: #cba6f7;
+    --blue: #89b4fa;
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --yellow: #f9e2af;
+    --teal: #94e2d5;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    padding: 40px 20px 80px;
+  }
+  .container { max-width: 780px; margin: 0 auto; }
+
+  h1 {
+    color: var(--mauve);
+    font-size: 28px;
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  h1 span { color: var(--blue); }
+  .subtitle {
+    color: var(--subtext);
+    font-size: 15px;
+    margin-bottom: 40px;
+  }
+
+  h2 {
+    color: var(--blue);
+    font-size: 20px;
+    margin: 40px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 .step-num {
+    display: inline-block;
+    background: var(--blue);
+    color: var(--bg);
+    width: 28px;
+    height: 28px;
+    line-height: 28px;
+    text-align: center;
+    border-radius: 50%;
+    font-size: 14px;
+    font-weight: 700;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+
+  h3 {
+    color: var(--teal);
+    font-size: 16px;
+    margin: 24px 0 10px;
+  }
+
+  p { margin-bottom: 14px; }
+
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code {
+    background: var(--card);
+    color: var(--yellow);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 13.5px;
+  }
+
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 12px 0 18px;
+    overflow-x: auto;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--text);
+    position: relative;
+  }
+  pre .comment { color: #6c7086; }
+  pre .cmd { color: var(--green); }
+  pre .flag { color: var(--blue); }
+  pre .value { color: var(--yellow); }
+  pre .env { color: var(--mauve); }
+
+  .copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--card);
+    color: var(--subtext);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .copy-btn:hover { color: var(--text); border-color: var(--mauve); }
+  .copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+
+  .model-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+  }
+  .model-table th {
+    text-align: left;
+    color: var(--mauve);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .model-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .model-table tr:last-child td { border-bottom: none; }
+  .model-table .model-name { color: var(--green); font-family: "Cascadia Code", monospace; font-size: 13px; }
+  .model-table .vram { color: var(--yellow); }
+  .model-table .speed { color: var(--teal); }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .badge-best { background: var(--green); color: var(--bg); }
+  .badge-fast { background: var(--teal); color: var(--bg); }
+  .badge-balanced { background: var(--blue); color: var(--bg); }
+
+  .status-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .dot-green { background: var(--green); }
+  .dot-red { background: var(--red); }
+  .dot-gray { background: var(--border); }
+
+  .tip {
+    background: rgba(137, 180, 250, 0.08);
+    border-left: 3px solid var(--blue);
+    padding: 12px 16px;
+    border-radius: 0 8px 8px 0;
+    margin: 14px 0;
+  }
+  .tip strong { color: var(--blue); }
+
+  .warning {
+    background: rgba(249, 226, 175, 0.08);
+    border-left: 3px solid var(--yellow);
+    padding: 12px 16px;
+    border-radius: 0 8px 8px 0;
+    margin: 14px 0;
+  }
+  .warning strong { color: var(--yellow); }
+
+  .how-it-works {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    align-items: center;
+    gap: 8px;
+    text-align: center;
+    margin: 20px 0;
+  }
+  .hw-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 12px;
+  }
+  .hw-box .label { font-size: 12px; color: var(--subtext); margin-bottom: 4px; }
+  .hw-box .name { color: var(--mauve); font-weight: 600; }
+  .hw-arrow { color: var(--border); font-size: 24px; }
+
+  .screenshot {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+    text-align: center;
+  }
+  .screenshot .mock {
+    display: inline-block;
+    text-align: left;
+    min-width: 340px;
+  }
+  .mock-row {
+    display: flex;
+    align-items: center;
+    margin: 6px 0;
+    gap: 10px;
+  }
+  .mock-label {
+    color: var(--subtext);
+    font-size: 13px;
+    width: 100px;
+    text-align: right;
+  }
+  .mock-combo {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 12px;
+    color: var(--text);
+    font-size: 13px;
+    flex: 1;
+  }
+  .mock-combo.active { border-color: var(--mauve); color: var(--green); }
+  .mock-btn {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 10px;
+    color: var(--subtext);
+    font-size: 12px;
+  }
+
+  .checklist { list-style: none; padding: 0; }
+  .checklist li {
+    padding: 6px 0 6px 28px;
+    position: relative;
+  }
+  .checklist li::before {
+    content: "✓";
+    position: absolute;
+    left: 4px;
+    color: var(--green);
+    font-weight: bold;
+  }
+
+  .faq dt {
+    color: var(--mauve);
+    font-weight: 600;
+    margin: 18px 0 6px;
+  }
+  .faq dd {
+    margin: 0 0 12px 0;
+    color: var(--subtext);
+  }
+  .faq dd code { font-size: 12.5px; }
+
+  footer {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--subtext);
+    font-size: 13px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Claude Manager <span>+ Ollama</span></h1>
+<p class="subtitle">Route Claude Code to local LLMs on your RTX 3090 — save API credits, keep full agentic workflow.</p>
+
+<!-- HOW IT WORKS -->
+<h2><span class="step-num">&darr;</span> How It Works</h2>
+
+<p>Since <strong>Ollama v0.14</strong> (Jan 2026), Ollama natively speaks the Anthropic Messages API. Claude Code doesn't know it's talking to a local model — it just sees a different API endpoint.</p>
+
+<div class="how-it-works">
+  <div class="hw-box">
+    <div class="label">Your app</div>
+    <div class="name">Claude Code</div>
+  </div>
+  <div class="hw-arrow">&rarr;</div>
+  <div class="hw-box">
+    <div class="label">localhost:11434</div>
+    <div class="name">Ollama</div>
+  </div>
+  <div class="hw-arrow">&rarr;</div>
+  <div class="hw-box">
+    <div class="label">RTX 3090 24GB</div>
+    <div class="name">Local Model</div>
+  </div>
+</div>
+
+<p>Claude Manager sets two environment variables before launching each instance:</p>
+
+<pre><span class="env">ANTHROPIC_BASE_URL</span>=<span class="value">http://localhost:11434</span>
+<span class="env">ANTHROPIC_API_KEY</span>=<span class="value">ollama</span></pre>
+
+<p>That's it. No proxy servers, no shims, no separate tools.</p>
+
+
+<!-- STEP 1 -->
+<h2><span class="step-num">1</span> Install Ollama</h2>
+
+<p>Open a terminal and run:</p>
+
+<pre><button class="copy-btn" onclick="copyCmd(this)">Copy</button><span class="cmd">winget install</span> <span class="value">Ollama.Ollama</span></pre>
+
+<p>Or download from <a href="https://ollama.com/download" target="_blank">ollama.com/download</a>.</p>
+
+<p>After install, Ollama runs as a background service automatically. Verify with:</p>
+
+<pre><button class="copy-btn" onclick="copyCmd(this)">Copy</button><span class="cmd">ollama</span> <span class="flag">--version</span>
+<span class="comment"># ollama version is 0.14.x</span></pre>
+
+
+<!-- STEP 2 -->
+<h2><span class="step-num">2</span> Pull a Model</h2>
+
+<p>Choose a model that fits your 24GB VRAM. Here are the best options for coding:</p>
+
+<div class="card">
+<table class="model-table">
+  <thead>
+    <tr><th>Model</th><th>VRAM</th><th>Speed</th><th>Strength</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="model-name">qwen2.5-coder:32b <span class="badge badge-best">Best</span></td>
+      <td class="vram">~20 GB</td>
+      <td class="speed">~15 tok/s</td>
+      <td>92.7% HumanEval — top coding model</td>
+    </tr>
+    <tr>
+      <td class="model-name">qwen3.5:27b <span class="badge badge-balanced">Balanced</span></td>
+      <td class="vram">~16 GB</td>
+      <td class="speed">~22 tok/s</td>
+      <td>72.4% SWE-bench — good general reasoning</td>
+    </tr>
+    <tr>
+      <td class="model-name">qwen3.5:35b-a3b <span class="badge badge-fast">Fast</span></td>
+      <td class="vram">~12 GB</td>
+      <td class="speed">~112 tok/s</td>
+      <td>MoE — fast agentic work, only 3B active</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>Pull your chosen model (this downloads 15–20 GB once):</p>
+
+<pre><button class="copy-btn" onclick="copyCmd(this)">Copy</button><span class="comment"># Recommended: best coding quality on RTX 3090</span>
+<span class="cmd">ollama pull</span> <span class="value">qwen2.5-coder:32b</span>
+
+<span class="comment"># Optional: also grab a fast one for simple tasks</span>
+<span class="cmd">ollama pull</span> <span class="value">qwen3.5:35b-a3b</span></pre>
+
+<p>Verify your models are available:</p>
+
+<pre><button class="copy-btn" onclick="copyCmd(this)">Copy</button><span class="cmd">ollama list</span>
+<span class="comment"># NAME                    ID           SIZE     MODIFIED
+# qwen2.5-coder:32b      abc123...    20 GB    2 minutes ago
+# qwen3.5:35b-a3b        def456...    12 GB    1 minute ago</span></pre>
+
+<div class="tip">
+  <strong>Tip:</strong> You can pull additional models anytime. Claude Manager will discover them automatically when you click <strong>Refresh</strong> or re-open the local model dropdown.
+</div>
+
+
+<!-- STEP 3 -->
+<h2><span class="step-num">3</span> Check the Status Dot</h2>
+
+<p>Open Claude Manager. Look at the toolbar — you'll see a colored dot to the left of the Pin button:</p>
+
+<div class="card" style="display: flex; align-items: center; gap: 16px; justify-content: center;">
+  <div>
+    <span class="status-dot dot-green"></span> <strong>Green</strong> — Ollama running, ready to go
+  </div>
+  <div style="color: var(--border);">|</div>
+  <div>
+    <span class="status-dot dot-red"></span> <strong>Red</strong> — Ollama not running
+  </div>
+  <div style="color: var(--border);">|</div>
+  <div>
+    <span class="status-dot dot-gray"></span> <strong>Gray</strong> — Checking...
+  </div>
+</div>
+
+<p>Click the dot to see full details: version, available models, and install instructions if Ollama isn't found.</p>
+
+<p>The dot auto-refreshes every 30 seconds. If it's red, start Ollama with:</p>
+
+<pre><button class="copy-btn" onclick="copyCmd(this)">Copy</button><span class="cmd">ollama serve</span></pre>
+
+<div class="tip">
+  <strong>Tip:</strong> On Windows, Ollama typically auto-starts as a background service after installation. If the dot is green, you're good — no need to run <code>ollama serve</code> manually.
+</div>
+
+
+<!-- STEP 4 -->
+<h2><span class="step-num">4</span> Switch to Local Backend</h2>
+
+<p>On the <strong>Launch</strong> tab, find the new <strong>Backend</strong> dropdown (between Mode and Session):</p>
+
+<div class="screenshot">
+  <div class="mock">
+    <div class="mock-row">
+      <span class="mock-label">Mode:</span>
+      <span class="mock-combo">Auto (full auto, confirm risky)</span>
+    </div>
+    <div class="mock-row">
+      <span class="mock-label">Backend:</span>
+      <span class="mock-combo active">Local (Ollama) &#9662;</span>
+    </div>
+    <div class="mock-row">
+      <span class="mock-label">Local model:</span>
+      <span class="mock-combo active">qwen2.5-coder:32b &#9662;</span>
+      <span class="mock-btn">Refresh</span>
+    </div>
+    <div class="mock-row">
+      <span class="mock-label">Session:</span>
+      <span class="mock-combo">New session</span>
+    </div>
+  </div>
+</div>
+
+<ol style="margin-left: 20px; margin-top: 10px;">
+  <li>Set <strong>Backend</strong> to <code>Local (Ollama)</code></li>
+  <li>The <strong>Model</strong> row switches to <strong>Local model</strong> — pick from your pulled models</li>
+  <li>If the dropdown is empty, click <strong>Refresh</strong> to re-query <code>ollama list</code></li>
+  <li>Select repos, set instance count, click <strong>Launch Claude</strong></li>
+</ol>
+
+<p>Each launched terminal window will run:</p>
+
+<pre><span class="cmd">set</span> <span class="env">ANTHROPIC_BASE_URL</span>=<span class="value">http://localhost:11434</span> && <span class="cmd">set</span> <span class="env">ANTHROPIC_API_KEY</span>=<span class="value">ollama</span> && <span class="cmd">claude</span> <span class="flag">--model</span> <span class="value">qwen2.5-coder:32b</span></pre>
+
+<p>Switch back to <strong>Cloud</strong> anytime — the normal Sonnet/Opus/Haiku dropdown reappears.</p>
+
+
+<!-- STEP 5 -->
+<h2><span class="step-num">5</span> Save a Preset</h2>
+
+<p>Create named presets for quick switching between workflows:</p>
+
+<div class="card">
+  <h3 style="margin-top:0;">Example presets</h3>
+  <table class="model-table">
+    <thead><tr><th>Preset Name</th><th>Backend</th><th>Model</th><th>Use For</th></tr></thead>
+    <tbody>
+      <tr>
+        <td style="color:var(--mauve);">Local CAM Work</td>
+        <td>Local</td>
+        <td class="model-name">qwen2.5-coder:32b</td>
+        <td>fiber-deposition-cam repo, routine edits</td>
+      </tr>
+      <tr>
+        <td style="color:var(--mauve);">Cloud Planning</td>
+        <td>Cloud</td>
+        <td class="model-name">Opus</td>
+        <td>Architecture decisions, complex refactors</td>
+      </tr>
+      <tr>
+        <td style="color:var(--mauve);">Quick Fixes</td>
+        <td>Local</td>
+        <td class="model-name">qwen3.5:35b-a3b</td>
+        <td>Fast MoE model for simple changes</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>To save: configure your settings, click <strong>Save</strong> in the preset bar, type a name. The backend choice and local model are persisted with the preset.</p>
+
+
+<!-- VERIFICATION -->
+<h2><span class="step-num">&#10003;</span> Verification Checklist</h2>
+
+<ul class="checklist">
+  <li><code>ollama --version</code> prints v0.14+</li>
+  <li><code>ollama list</code> shows at least one model</li>
+  <li>Status dot in Claude Manager toolbar is <span class="status-dot dot-green" style="margin:0 2px;"></span> green</li>
+  <li>Clicking the dot shows version and model list</li>
+  <li>Backend dropdown toggles between Cloud model / Local model rows</li>
+  <li>Launch with Local backend opens terminal with <code>set ANTHROPIC_BASE_URL=...</code> prefix</li>
+  <li>Launch with Cloud backend works exactly as before (no env vars)</li>
+  <li>Presets save and restore the backend + local model selection</li>
+</ul>
+
+
+<!-- FAQ -->
+<h2><span class="step-num">?</span> FAQ</h2>
+
+<dl class="faq">
+  <dt>How much VRAM does qwen2.5-coder:32b actually use?</dt>
+  <dd>About 20 GB at Q4_K_M quantization. Your RTX 3090 has 24 GB, leaving headroom for context. Ollama handles quantization and memory management automatically.</dd>
+
+  <dt>Can I run Cloud and Local instances at the same time?</dt>
+  <dd>Yes. Each terminal gets its own environment. Launch 2 instances with Cloud, then switch to Local and launch 2 more — they'll coexist. The env vars are per-process, not global.</dd>
+
+  <dt>What if Ollama isn't running when I launch?</dt>
+  <dd>Claude Code will fail to connect and show an error in the terminal. Start Ollama first (<code>ollama serve</code>) and check that the status dot is green before launching.</dd>
+
+  <dt>Will the local model have tool use / agentic capabilities?</dt>
+  <dd>Yes — Claude Code's agentic loop (file editing, bash, etc.) works the same way. The model quality determines how well it uses those tools. Qwen 2.5 Coder 32B handles tool use well.</dd>
+
+  <dt>How do I update a model?</dt>
+  <dd>Run <code>ollama pull qwen2.5-coder:32b</code> again — it'll download only the diff. Click Refresh in Claude Manager to pick up changes.</dd>
+
+  <dt>Can I use a custom / fine-tuned model?</dt>
+  <dd>Yes. Create a <a href="https://github.com/ollama/ollama/blob/main/docs/modelfile.md" target="_blank">Modelfile</a>, run <code>ollama create mymodel -f Modelfile</code>, and it will appear in the local model dropdown.</dd>
+
+  <dt>What's the API key "ollama" about?</dt>
+  <dd>Ollama doesn't require authentication, but Claude Code requires a non-empty <code>ANTHROPIC_API_KEY</code>. The string <code>ollama</code> is a dummy value — any non-empty string works.</dd>
+</dl>
+
+
+<footer>
+  Claude Manager &middot; <a href="https://github.com/user577/claude-manager">github.com/user577/claude-manager</a>
+</footer>
+
+</div>
+
+<script>
+function copyCmd(btn) {
+  const pre = btn.parentElement;
+  const text = pre.textContent
+    .replace('Copy', '')
+    .replace(/^#.*$/gm, '')
+    .trim()
+    .split('\n')
+    .filter(l => l.trim())
+    .join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = 'Copy';
+      btn.classList.remove('copied');
+    }, 1500);
+  });
+}
+</script>
+</body>
+</html>
