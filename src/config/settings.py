@@ -21,6 +21,7 @@ class Settings:
     repos: list[RepoInfo] = field(default_factory=list)
     layout: str = "grid_2x2"
     instance_count: int = 4
+    permission_mode: str = "default"
     github_dir: str = str(DEFAULT_GITHUB_DIR)
     window_x: int = 200
     window_y: int = 200
@@ -41,6 +42,7 @@ class Settings:
                 repos=repos,
                 layout=data.get("layout", "grid_2x2"),
                 instance_count=data.get("instance_count", 4),
+                permission_mode=data.get("permission_mode", "default"),
                 github_dir=data.get("github_dir", str(DEFAULT_GITHUB_DIR)),
                 window_x=data.get("window_x", 200),
                 window_y=data.get("window_y", 200),
@@ -57,6 +59,7 @@ class Settings:
             "repos": [asdict(r) for r in self.repos],
             "layout": self.layout,
             "instance_count": self.instance_count,
+            "permission_mode": self.permission_mode,
             "github_dir": self.github_dir,
             "window_x": self.window_x,
             "window_y": self.window_y,
