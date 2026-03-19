@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QSpinBox, QComboBox,
-    QPushButton, QLabel, QScrollArea, QFrame, QProgressBar,
+    QPushButton, QLabel, QScrollArea, QFrame, QProgressBar, QLineEdit,
 )
 
 from src.config.settings import Settings
@@ -36,6 +36,13 @@ class LauncherPanel(QWidget):
         header_row.addWidget(none_btn)
 
         layout.addLayout(header_row)
+
+        # --- Search filter ---
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Filter repos...")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.textChanged.connect(self._on_search)
+        layout.addWidget(self.search_box)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -140,8 +147,14 @@ class LauncherPanel(QWidget):
 
     def _set_all_checks(self, checked: bool):
         for cb in self.repo_checkboxes:
-            if cb.isEnabled():
+            if cb.isEnabled() and cb.isVisible():
                 cb.setChecked(checked)
+
+    def _on_search(self, text: str):
+        query = text.strip().lower()
+        for cb in self.repo_checkboxes:
+            visible = not query or query in cb.repo_info.label.lower()
+            cb.setVisible(visible)
 
     def _on_check_changed(self):
         for cb in self.repo_checkboxes:

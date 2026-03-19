@@ -9,6 +9,7 @@ from src.core.repo_scanner import RepoScannerThread, RepoStatus
 from src.core.git_operations import GitWorker
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
+from src.gui.commit_confirm_dialog import CommitConfirmDialog
 
 
 class GitStatusPanel(QWidget):
@@ -38,6 +39,13 @@ class GitStatusPanel(QWidget):
         top_row.addWidget(self.refresh_btn)
         layout.addLayout(top_row)
 
+        # --- Search filter ---
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Filter repos...")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.textChanged.connect(self._on_search)
+        layout.addWidget(self.search_box)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -51,6 +59,21 @@ class GitStatusPanel(QWidget):
         layout.addWidget(scroll)
 
         self.cards: dict[str, RepoStatusCard] = {}
+
+        # --- Quick-select buttons ---
+        select_row = QHBoxLayout()
+        dirty_btn = QPushButton("Select Dirty")
+        dirty_btn.setFixedWidth(100)
+        dirty_btn.clicked.connect(self._select_dirty)
+        select_row.addWidget(dirty_btn)
+
+        ahead_btn = QPushButton("Select Ahead")
+        ahead_btn.setFixedWidth(100)
+        ahead_btn.clicked.connect(self._select_ahead)
+        select_row.addWidget(ahead_btn)
+
+        select_row.addStretch()
+        layout.addLayout(select_row)
 
         # --- Commit section ---
         commit_row = QHBoxLayout()
@@ -151,6 +174,30 @@ class GitStatusPanel(QWidget):
         self.refresh_btn.setEnabled(True)
         self._scanner = None
 
+    def _on_search(self, text: str):
+        query = text.strip().lower()
+        for path, card in self.cards.items():
+            repo = next((r for r in self.settings.repos if r.path == path), None)
+            visible = not query or (repo and query in repo.label.lower())
+            card.setVisible(visible)
+
+    def _select_dirty(self):
+        """Highlight dirty repos by scrolling log — future: multi-select cards."""
+        dirty = [s.label for s in self._statuses.values() if s.dirty]
+        if dirty:
+            self.search_box.clear()
+            self.log.log_info(f"Dirty repos ({len(dirty)}): {', '.join(dirty)}")
+        else:
+            self.log.log_info("All repos are clean")
+
+    def _select_ahead(self):
+        ahead = [s.label for s in self._statuses.values() if s.ahead > 0]
+        if ahead:
+            self.search_box.clear()
+            self.log.log_info(f"Ahead repos ({len(ahead)}): {', '.join(ahead)}")
+        else:
+            self.log.log_info("No repos are ahead of remote")
+
     def _set_buttons_enabled(self, enabled: bool):
         self.commit_btn.setEnabled(enabled and bool(self.commit_msg.text().strip()))
         self.push_btn.setEnabled(enabled)
@@ -215,6 +262,13 @@ class GitStatusPanel(QWidget):
         if not dirty:
             self.log.log_info("All repos are clean, nothing to commit")
             return
+
+        # Show confirmation dialog with diff stats
+        dlg = CommitConfirmDialog(dirty, msg, parent=self)
+        if not dlg.exec():
+            self.log.log_info("Commit cancelled")
+            return
+
         self.log.log_info(f"Committing {len(dirty)} dirty repos...")
         self._start_operation("commit", dirty, msg)
 
