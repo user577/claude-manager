@@ -73,12 +73,18 @@ class RepoStatusCard(QWidget):
                 parts.append(f"{status.ahead} ahead")
             if status.behind:
                 parts.append(f"{status.behind} behind")
+            if status.diverged:
+                parts.append("DIVERGED")
+            if status.stash_count:
+                parts.append(f"{status.stash_count} stash")
             if not parts:
                 parts.append("Clean")
         self.detail_label.setText(" | ".join(parts))
 
         # Dot color
         if status.error:
+            self.dot.set_color(COLOR_ERROR)
+        elif status.diverged:
             self.dot.set_color(COLOR_ERROR)
         elif status.dirty:
             self.dot.set_color(COLOR_DIRTY)
