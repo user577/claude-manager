@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 
 from src.constants import APP_DISPLAY_NAME, ICON_PATH
 from src.config.settings import Settings
-from src.core.process_launcher import get_ollama_status
+from src.core.process_launcher import OllamaHealthWorker
 from src.gui.launcher_panel import LauncherPanel
 from src.gui.git_status_panel import GitStatusPanel
 from src.gui.settings_dialog import SettingsDialog
@@ -75,7 +75,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.ollama_dot)
         self._ollama_status: dict = {}
 
-        # Check ollama on startup and every 30 seconds
+        # Check ollama on startup and every 30 seconds (non-blocking)
+        self._ollama_health_worker = None
         self._ollama_timer = QTimer(self)
         self._ollama_timer.timeout.connect(self._check_ollama)
         self._ollama_timer.start(30_000)
@@ -138,8 +139,15 @@ class MainWindow(QMainWindow):
         self.show()
 
     def _check_ollama(self):
-        """Ping ollama and update the status dot color."""
-        status = get_ollama_status()
+        """Kick off a background health check (non-blocking)."""
+        if self._ollama_health_worker is not None and self._ollama_health_worker.isRunning():
+            return  # previous check still in progress
+        self._ollama_health_worker = OllamaHealthWorker(parent=self)
+        self._ollama_health_worker.result.connect(self._on_ollama_health)
+        self._ollama_health_worker.start()
+
+    def _on_ollama_health(self, status: dict):
+        """Update the status dot from the background worker's result."""
         self._ollama_status = status
         if status["running"]:
             color = "#a6e3a1"  # green

@@ -7,7 +7,9 @@ from PySide6.QtWidgets import (
 
 from src.config.presets import Preset, PresetManager
 from src.config.settings import Settings
-from src.core.process_launcher import LaunchWorker, get_ollama_models
+from src.core.process_launcher import (
+    LaunchWorker, get_ollama_models, OllamaTestWorker, OllamaPullWorker,
+)
 from src.gui.presets_panel import PresetsBar
 from src.gui.widgets.log_output import LogOutput
 
@@ -148,12 +150,35 @@ class LauncherPanel(QWidget):
         local_model_layout.addWidget(QLabel("Local model:"))
         self.local_model_combo = QComboBox()
         self.local_model_combo.setPlaceholderText("No models found")
+        self._test_ollama_btn = QPushButton("Test")
+        self._test_ollama_btn.setFixedWidth(50)
+        self._test_ollama_btn.setToolTip("Send a test prompt to verify the model responds")
+        self._test_ollama_btn.clicked.connect(self._test_ollama_connection)
         self._refresh_ollama_btn = QPushButton("Refresh")
         self._refresh_ollama_btn.setFixedWidth(70)
         self._refresh_ollama_btn.clicked.connect(self._refresh_ollama_models)
         local_model_layout.addWidget(self.local_model_combo, 1)
+        local_model_layout.addWidget(self._test_ollama_btn)
         local_model_layout.addWidget(self._refresh_ollama_btn)
         layout.addWidget(self.local_model_row)
+
+        # --- Pull model row ---
+        self.pull_model_row = QWidget()
+        pull_layout = QHBoxLayout(self.pull_model_row)
+        pull_layout.setContentsMargins(0, 0, 0, 0)
+        pull_layout.addWidget(QLabel("Pull model:"))
+        self.pull_model_edit = QLineEdit()
+        self.pull_model_edit.setPlaceholderText("e.g. qwen2.5-coder:32b")
+        self.pull_model_edit.setClearButtonEnabled(True)
+        self._pull_btn = QPushButton("Pull")
+        self._pull_btn.setFixedWidth(50)
+        self._pull_btn.clicked.connect(self._pull_ollama_model)
+        pull_layout.addWidget(self.pull_model_edit, 1)
+        pull_layout.addWidget(self._pull_btn)
+        layout.addWidget(self.pull_model_row)
+
+        self._test_worker = None
+        self._pull_worker = None
 
         # Initialize backend visibility
         self._on_backend_changed(self.backend_combo.currentIndex())
@@ -353,8 +378,56 @@ class LauncherPanel(QWidget):
         is_local = index == 1
         self.cloud_model_row.setVisible(not is_local)
         self.local_model_row.setVisible(is_local)
+        self.pull_model_row.setVisible(is_local)
+        self.launch_btn.setText(
+            "Launch Claude (Local)" if is_local else "Launch Claude"
+        )
         if is_local and self.local_model_combo.count() == 0:
             self._refresh_ollama_models()
+
+    def _test_ollama_connection(self):
+        model = self._get_local_model()
+        if not model:
+            self.log.log_err("No local model selected")
+            return
+        if self._test_worker is not None and self._test_worker.isRunning():
+            return
+        self._test_ollama_btn.setEnabled(False)
+        self.log.log_info(f"Testing {model}...")
+        self._test_worker = OllamaTestWorker(model, parent=self)
+        self._test_worker.result.connect(self._on_test_result)
+        self._test_worker.start()
+
+    def _on_test_result(self, success: bool, message: str):
+        self._test_ollama_btn.setEnabled(True)
+        if success:
+            self.log.log_ok(f"Model responded: {message}")
+        else:
+            self.log.log_err(f"Test failed: {message}")
+
+    def _pull_ollama_model(self):
+        model_name = self.pull_model_edit.text().strip()
+        if not model_name:
+            self.log.log_err("Enter a model name to pull")
+            return
+        if self._pull_worker is not None and self._pull_worker.isRunning():
+            self.log.log_err("A pull is already in progress")
+            return
+        self._pull_btn.setEnabled(False)
+        self.log.log_info(f"Pulling {model_name}...")
+        self._pull_worker = OllamaPullWorker(model_name, parent=self)
+        self._pull_worker.progress.connect(lambda msg: self.log.log_info(msg))
+        self._pull_worker.finished.connect(self._on_pull_finished)
+        self._pull_worker.start()
+
+    def _on_pull_finished(self, success: bool, message: str):
+        self._pull_btn.setEnabled(True)
+        if success:
+            self.log.log_ok(message)
+            self.pull_model_edit.clear()
+            self._refresh_ollama_models()
+        else:
+            self.log.log_err(message)
 
     def _refresh_ollama_models(self):
         self.local_model_combo.clear()

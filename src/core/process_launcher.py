@@ -73,6 +73,79 @@ def get_ollama_status() -> dict:
     return info
 
 
+class OllamaHealthWorker(QThread):
+    """Check ollama status in a background thread to avoid blocking the UI."""
+    result = Signal(dict)
+
+    def run(self):
+        self.result.emit(get_ollama_status())
+
+
+class OllamaTestWorker(QThread):
+    """Send a minimal prompt to verify the local model responds."""
+    result = Signal(bool, str)  # (success, message)
+
+    def __init__(self, model: str, parent=None):
+        super().__init__(parent)
+        self.model = model
+
+    def run(self):
+        try:
+            import urllib.request
+            import json
+            payload = json.dumps({
+                "model": self.model,
+                "messages": [{"role": "user", "content": "Say OK"}],
+                "max_tokens": 8,
+                "stream": False,
+            }).encode()
+            req = urllib.request.Request(
+                "http://localhost:11434/v1/chat/completions",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+                reply = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                self.result.emit(True, reply.strip()[:80] or "(empty)")
+        except Exception as e:
+            self.result.emit(False, str(e))
+
+
+class OllamaPullWorker(QThread):
+    """Pull an ollama model, emitting progress lines."""
+    progress = Signal(str)
+    finished = Signal(bool, str)  # (success, final_message)
+
+    def __init__(self, model_name: str, parent=None):
+        super().__init__(parent)
+        self.model_name = model_name
+
+    def run(self):
+        try:
+            proc = subprocess.Popen(
+                ["ollama", "pull", self.model_name],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            for line in proc.stdout:
+                stripped = line.strip()
+                if stripped:
+                    self.progress.emit(stripped)
+            proc.wait()
+            if proc.returncode == 0:
+                # Invalidate the model cache so refresh picks it up
+                global _ollama_model_cache
+                _ollama_model_cache = None
+                self.finished.emit(True, f"Successfully pulled {self.model_name}")
+            else:
+                self.finished.emit(False, f"ollama pull exited with code {proc.returncode}")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
 def _make_title(label: str, uid: str) -> str:
     return f"Claude-{label}-{uid}"
 
