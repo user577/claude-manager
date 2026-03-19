@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QSpinBox, QComboBox,
-    QPushButton, QLabel, QScrollArea, QFrame,
+    QPushButton, QLabel, QScrollArea, QFrame, QProgressBar,
 )
 
 from src.config.settings import Settings
@@ -18,10 +18,24 @@ class LauncherPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        # --- Repo checklist ---
+        # --- Repo checklist header + select buttons ---
+        header_row = QHBoxLayout()
         header = QLabel("Repositories")
         header.setObjectName("sectionHeader")
-        layout.addWidget(header)
+        header_row.addWidget(header)
+        header_row.addStretch()
+
+        all_btn = QPushButton("All")
+        all_btn.setFixedWidth(50)
+        all_btn.clicked.connect(lambda: self._set_all_checks(True))
+        header_row.addWidget(all_btn)
+
+        none_btn = QPushButton("None")
+        none_btn.setFixedWidth(50)
+        none_btn.clicked.connect(lambda: self._set_all_checks(False))
+        header_row.addWidget(none_btn)
+
+        layout.addLayout(header_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -81,6 +95,17 @@ class LauncherPanel(QWidget):
         self.launch_btn.clicked.connect(self._on_launch)
         layout.addWidget(self.launch_btn)
 
+        # --- Progress ---
+        self.progress = QProgressBar()
+        self.progress.setMaximumHeight(6)
+        self.progress.setTextVisible(False)
+        self.progress.setStyleSheet(
+            "QProgressBar { background: #313244; border: none; border-radius: 3px; }"
+            "QProgressBar::chunk { background: #89b4fa; border-radius: 3px; }"
+        )
+        self.progress.hide()
+        layout.addWidget(self.progress)
+
         # --- Log ---
         self.log = LogOutput()
         layout.addWidget(self.log)
@@ -94,16 +119,29 @@ class LauncherPanel(QWidget):
         self.repo_checkboxes.clear()
 
         for repo in self.settings.repos:
-            branch = self.settings.get_branch(repo)
-            cb = QCheckBox(f"{repo.label}  ({branch})")
-            cb.setChecked(repo.enabled)
-            cb.repo_info = repo
-            cb.stateChanged.connect(self._on_check_changed)
+            if not repo.exists():
+                cb = QCheckBox(f"{repo.label}  (MISSING)")
+                cb.setChecked(False)
+                cb.setEnabled(False)
+                cb.setStyleSheet("color: #f38ba8;")
+                cb.repo_info = repo
+                repo.enabled = False
+            else:
+                branch = self.settings.get_branch(repo)
+                cb = QCheckBox(f"{repo.label}  ({branch})")
+                cb.setChecked(repo.enabled)
+                cb.repo_info = repo
+                cb.stateChanged.connect(self._on_check_changed)
             self.check_layout.addWidget(cb)
             self.repo_checkboxes.append(cb)
 
     def refresh_repos(self):
         self._populate_repos()
+
+    def _set_all_checks(self, checked: bool):
+        for cb in self.repo_checkboxes:
+            if cb.isEnabled():
+                cb.setChecked(checked)
 
     def _on_check_changed(self):
         for cb in self.repo_checkboxes:
@@ -133,22 +171,33 @@ class LauncherPanel(QWidget):
             self.log.log_err("No repos selected")
             return
 
+        actual_count = min(count, len(enabled))
         self.launch_btn.setEnabled(False)
-        self.log.log_info(f"Launching {min(count, len(enabled))} instances...")
+        self.progress.setRange(0, actual_count + 1)  # +1 for tiling step
+        self.progress.setValue(0)
+        self.progress.show()
+        self.log.log_info(f"Launching {actual_count} instances...")
 
         mode = self._get_permission_mode()
         self._worker = LaunchWorker(enabled, layout, count, mode, parent=self)
-        self._worker.status.connect(self.log.log_info)
+        self._worker.status.connect(self._on_launch_status)
         self._worker.finished_ok.connect(self._launch_done)
         self._worker.finished_err.connect(self._launch_error)
         self._worker.start()
 
+    def _on_launch_status(self, msg: str):
+        self.log.log_info(msg)
+        self.progress.setValue(self.progress.value() + 1)
+
     def _launch_done(self):
         self.log.log_ok("All instances launched and tiled")
+        self.progress.setValue(self.progress.maximum())
+        self.progress.hide()
         self.launch_btn.setEnabled(True)
         self._worker = None
 
     def _launch_error(self, msg: str):
         self.log.log_err(msg)
+        self.progress.hide()
         self.launch_btn.setEnabled(True)
         self._worker = None

@@ -29,6 +29,10 @@ class GitStatusPanel(QWidget):
         top_row.addWidget(header)
         top_row.addStretch()
 
+        self.scan_label = QLabel("")
+        self.scan_label.setStyleSheet("color: #585b70; font-size: 11px;")
+        top_row.addWidget(self.scan_label)
+
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(self.scan_all)
         top_row.addWidget(self.refresh_btn)
@@ -52,10 +56,12 @@ class GitStatusPanel(QWidget):
         commit_row = QHBoxLayout()
         self.commit_msg = QLineEdit()
         self.commit_msg.setPlaceholderText("Commit message for all dirty repos...")
+        self.commit_msg.textChanged.connect(self._on_msg_changed)
         commit_row.addWidget(self.commit_msg, 1)
 
         self.commit_btn = QPushButton("Commit All Dirty")
         self.commit_btn.setObjectName("commitBtn")
+        self.commit_btn.setEnabled(False)
         self.commit_btn.clicked.connect(self._on_commit)
         commit_row.addWidget(self.commit_btn)
         layout.addLayout(commit_row)
@@ -72,6 +78,15 @@ class GitStatusPanel(QWidget):
         self.sync_btn.setObjectName("syncBtn")
         self.sync_btn.clicked.connect(self._on_sync)
         action_row.addWidget(self.sync_btn)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setStyleSheet(
+            "QPushButton { background: #f38ba8; color: #1e1e2e; border: none; font-weight: bold; }"
+            "QPushButton:hover { background: #f5a0b8; }"
+        )
+        self.cancel_btn.hide()
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        action_row.addWidget(self.cancel_btn)
 
         action_row.addStretch()
         layout.addLayout(action_row)
@@ -104,12 +119,19 @@ class GitStatusPanel(QWidget):
 
         for repo in self.settings.repos:
             card = RepoStatusCard()
-            card.update_status(RepoStatus(path=repo.path, label=repo.label))
+            if not repo.exists():
+                card.update_status(RepoStatus(
+                    path=repo.path, label=repo.label, error="Path not found"))
+            else:
+                card.update_status(RepoStatus(path=repo.path, label=repo.label))
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
 
     def scan_all(self):
         self.refresh_btn.setEnabled(False)
+        self._scan_count = 0
+        self._scan_total = len(self.settings.repos)
+        self.scan_label.setText(f"Scanning 0/{self._scan_total}...")
         self._build_cards()
         repos = list(self.settings.repos)
         self._scanner = RepoScannerThread(repos, parent=self)
@@ -118,19 +140,23 @@ class GitStatusPanel(QWidget):
         self._scanner.start()
 
     def _on_status_updated(self, status: RepoStatus):
+        self._scan_count += 1
+        self.scan_label.setText(f"Scanning {self._scan_count}/{self._scan_total}...")
         self._statuses[status.path] = status
         if status.path in self.cards:
             self.cards[status.path].update_status(status)
 
     def _on_scan_complete(self):
+        self.scan_label.setText("")
         self.refresh_btn.setEnabled(True)
         self._scanner = None
 
     def _set_buttons_enabled(self, enabled: bool):
-        self.commit_btn.setEnabled(enabled)
+        self.commit_btn.setEnabled(enabled and bool(self.commit_msg.text().strip()))
         self.push_btn.setEnabled(enabled)
         self.sync_btn.setEnabled(enabled)
         self.refresh_btn.setEnabled(enabled)
+        self.cancel_btn.setVisible(not enabled)
 
     def _start_operation(self, operation: str, repos, message: str = ""):
         if not repos:
@@ -157,6 +183,11 @@ class GitStatusPanel(QWidget):
         else:
             self.log.log_err(f"[{operation}] {label}: {short}")
 
+    def _on_cancel(self):
+        if self._git_worker:
+            self._git_worker.cancel()
+            self.log.log_info("Cancelling...")
+
     def _on_all_done(self):
         self._set_buttons_enabled(True)
         self.progress.hide()
@@ -164,10 +195,19 @@ class GitStatusPanel(QWidget):
         # Re-scan to update cards
         self.scan_all()
 
+    def _on_msg_changed(self, text: str):
+        has_text = bool(text.strip())
+        self.commit_btn.setEnabled(has_text)
+        if has_text:
+            self.commit_msg.setStyleSheet("")
+        else:
+            self.commit_msg.setStyleSheet("border-color: #f38ba8;")
+
     def _on_commit(self):
         msg = self.commit_msg.text().strip()
         if not msg:
-            self.log.log_err("Enter a commit message")
+            self.commit_msg.setStyleSheet("border-color: #f38ba8;")
+            self.commit_msg.setFocus()
             return
         # Only commit dirty repos
         dirty = [r for r in self.settings.repos
