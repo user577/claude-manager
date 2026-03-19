@@ -66,6 +66,12 @@ class MainWindow(QMainWindow):
         self.pin_btn.clicked.connect(self._toggle_on_top)
         toolbar.addWidget(self.pin_btn)
 
+        help_btn = QPushButton("?")
+        help_btn.setFixedWidth(32)
+        help_btn.setToolTip("Keyboard shortcuts")
+        help_btn.clicked.connect(self._show_shortcuts)
+        toolbar.addWidget(help_btn)
+
         settings_btn = QPushButton("Settings")
         settings_btn.setToolTip("Manage repos and preferences")
         settings_btn.clicked.connect(self._open_settings)
@@ -109,6 +115,19 @@ class MainWindow(QMainWindow):
             self.setWindowFlags(flags & ~Qt.WindowStaysOnTopHint)
             self.pin_btn.setText("Pin")
         self.show()
+
+    def _show_shortcuts(self):
+        from PySide6.QtWidgets import QMessageBox
+        shortcuts = (
+            "<table cellpadding='4'>"
+            "<tr><td><b>Ctrl+L</b></td><td>Launch Claude instances</td></tr>"
+            "<tr><td><b>Ctrl+1</b></td><td>Switch to Launch tab</td></tr>"
+            "<tr><td><b>Ctrl+2</b></td><td>Switch to Git tab</td></tr>"
+            "<tr><td><b>Ctrl+R</b></td><td>Refresh git status</td></tr>"
+            "<tr><td><b>Ctrl+Enter</b></td><td>Commit all dirty repos</td></tr>"
+            "</table>"
+        )
+        QMessageBox.information(self, "Keyboard Shortcuts", shortcuts)
 
     def _open_settings(self):
         dlg = SettingsDialog(self.settings, self)
