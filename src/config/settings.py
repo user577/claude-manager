@@ -11,6 +11,7 @@ class RepoInfo:
     path: str
     label: str
     enabled: bool = True
+    tags: list[str] = field(default_factory=list)
 
     def exists(self) -> bool:
         return Path(self.path).is_dir()
@@ -79,6 +80,12 @@ class Settings:
                 if path_str not in known_paths:
                     label = child.name
                     self.repos.append(RepoInfo(path=path_str, label=label))
+
+    def get_all_tags(self) -> list[str]:
+        tags: set[str] = set()
+        for r in self.repos:
+            tags.update(r.tags)
+        return sorted(tags)
 
     def get_enabled_repos(self) -> list[RepoInfo]:
         return [r for r in self.repos if r.enabled and r.exists()]
