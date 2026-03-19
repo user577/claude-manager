@@ -2,10 +2,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QSpinBox, QComboBox,
     QPushButton, QLabel, QScrollArea, QFrame, QProgressBar, QLineEdit,
+    QInputDialog, QMessageBox,
 )
 
+from src.config.presets import Preset, PresetManager
 from src.config.settings import Settings
 from src.core.process_launcher import LaunchWorker
+from src.gui.presets_panel import PresetsBar
 from src.gui.widgets.log_output import LogOutput
 
 
@@ -17,6 +20,15 @@ class LauncherPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
+
+        # --- Presets bar ---
+        self.preset_manager = PresetManager()
+        self.presets_bar = PresetsBar()
+        self._refresh_preset_list()
+        self.presets_bar.load_requested.connect(self._load_preset)
+        self.presets_bar.save_requested.connect(self._save_preset)
+        self.presets_bar.delete_requested.connect(self._delete_preset)
+        layout.addWidget(self.presets_bar)
 
         # --- Repo checklist header + select buttons ---
         header_row = QHBoxLayout()
@@ -214,3 +226,120 @@ class LauncherPanel(QWidget):
         self.progress.hide()
         self.launch_btn.setEnabled(True)
         self._worker = None
+
+    # ---- Preset management ----
+
+    def _refresh_preset_list(self) -> None:
+        """Repopulate the preset combo from disk."""
+        self.presets_bar.set_names(self.preset_manager.names())
+
+    def _save_preset(self) -> None:
+        """Prompt for a name and save the current launcher state as a preset."""
+        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        existing = self.preset_manager.get(name)
+        if existing is not None:
+            reply = QMessageBox.question(
+                self,
+                "Overwrite Preset",
+                f'A preset named "{name}" already exists. Overwrite?',
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        enabled_repos = [
+            cb.repo_info.path
+            for cb in self.repo_checkboxes
+            if cb.isChecked()
+        ]
+
+        preset = Preset(
+            name=name,
+            enabled_repos=enabled_repos,
+            instance_count=self.count_spin.value(),
+            layout=self._get_layout_key(),
+            permission_mode=self._get_permission_mode(),
+        )
+
+        # Capture optional controls if they exist
+        if hasattr(self, "model_combo"):
+            model_keys = ["default", "opus", "sonnet", "haiku"]
+            idx = self.model_combo.currentIndex()
+            preset.model = model_keys[idx] if idx < len(model_keys) else "default"
+
+        if hasattr(self, "session_combo"):
+            session_keys = ["new", "continue", "resume"]
+            idx = self.session_combo.currentIndex()
+            preset.session_mode = session_keys[idx] if idx < len(session_keys) else "new"
+
+        if hasattr(self, "prompt_edit"):
+            preset.initial_prompt = self.prompt_edit.text()
+
+        if hasattr(self, "worktree_check"):
+            preset.use_worktree = self.worktree_check.isChecked()
+
+        self.preset_manager.add(preset)
+        self._refresh_preset_list()
+        self.log.log_ok(f'Preset "{name}" saved')
+
+    def _load_preset(self, name: str) -> None:
+        """Apply a saved preset to all launcher controls."""
+        preset = self.preset_manager.get(name)
+        if preset is None:
+            self.log.log_err(f'Preset "{name}" not found')
+            return
+
+        # 1. Check / uncheck repos
+        enabled_set = set(preset.enabled_repos)
+        for cb in self.repo_checkboxes:
+            if cb.isEnabled():
+                cb.setChecked(cb.repo_info.path in enabled_set)
+
+        # 2. Instance count
+        self.count_spin.setValue(preset.instance_count)
+
+        # 3. Layout
+        layout_map = {"grid_2x2": 0, "vertical": 1, "horizontal": 2, "single": 3}
+        self.layout_combo.setCurrentIndex(layout_map.get(preset.layout, 0))
+
+        # 4. Permission mode
+        mode_map = {"default": 0, "acceptEdits": 1, "auto": 2, "bypassPermissions": 3, "plan": 4}
+        self.mode_combo.setCurrentIndex(mode_map.get(preset.permission_mode, 0))
+
+        # 5. Optional controls (may not exist on this branch)
+        if hasattr(self, "model_combo"):
+            model_map = {"default": 0, "opus": 1, "sonnet": 2, "haiku": 3}
+            self.model_combo.setCurrentIndex(model_map.get(preset.model, 0))
+
+        if hasattr(self, "session_combo"):
+            session_map = {"new": 0, "continue": 1, "resume": 2}
+            self.session_combo.setCurrentIndex(session_map.get(preset.session_mode, 0))
+
+        if hasattr(self, "prompt_edit"):
+            self.prompt_edit.setText(preset.initial_prompt)
+
+        if hasattr(self, "worktree_check"):
+            self.worktree_check.setChecked(preset.use_worktree)
+
+        self.log.log_ok(f'Preset "{name}" loaded')
+
+    def _delete_preset(self, name: str) -> None:
+        """Delete the selected preset after confirmation."""
+        reply = QMessageBox.question(
+            self,
+            "Delete Preset",
+            f'Delete preset "{name}"?',
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        if self.preset_manager.delete(name):
+            self._refresh_preset_list()
+            self.log.log_ok(f'Preset "{name}" deleted')
+        else:
+            self.log.log_err(f'Preset "{name}" not found')
