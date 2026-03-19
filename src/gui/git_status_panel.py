@@ -43,8 +43,18 @@ class GitStatusPanel(QWidget):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Filter repos...")
         self.search_box.setClearButtonEnabled(True)
-        self.search_box.textChanged.connect(self._on_search)
+        self.search_box.textChanged.connect(self._apply_filters)
         layout.addWidget(self.search_box)
+
+        # --- Tag filter ---
+        self.tag_bar_widget = QWidget()
+        self.tag_bar = QHBoxLayout(self.tag_bar_widget)
+        self.tag_bar.setContentsMargins(0, 0, 0, 0)
+        self.tag_bar.setSpacing(4)
+        self.tag_buttons: dict[str, QPushButton] = {}
+        self.active_tags: set[str] = set()
+        layout.addWidget(self.tag_bar_widget)
+        self._refresh_tag_bar()
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -174,12 +184,80 @@ class GitStatusPanel(QWidget):
         self.refresh_btn.setEnabled(True)
         self._scanner = None
 
-    def _on_search(self, text: str):
-        query = text.strip().lower()
+    def _refresh_tag_bar(self):
+        for btn in self.tag_buttons.values():
+            btn.setParent(None)
+        self.tag_buttons.clear()
+        while self.tag_bar.count():
+            item = self.tag_bar.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+        all_tags = self.settings.get_all_tags()
+        if not all_tags:
+            self.tag_bar_widget.hide()
+            return
+        self.tag_bar_widget.show()
+
+        for tag in all_tags:
+            btn = QPushButton(tag)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(self._tag_style(False))
+            btn.clicked.connect(lambda checked, t=tag: self._toggle_tag(t))
+            self.tag_bar.addWidget(btn)
+            self.tag_buttons[tag] = btn
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setCursor(Qt.PointingHandCursor)
+        clear_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #585b70; border: none; "
+            "font-size: 11px; padding: 3px 6px; }"
+            "QPushButton:hover { color: #cdd6f4; }"
+        )
+        clear_btn.clicked.connect(self._clear_tags)
+        self.tag_bar.addWidget(clear_btn)
+        self.tag_bar.addStretch()
+
+    @staticmethod
+    def _tag_style(active: bool) -> str:
+        if active:
+            return (
+                "QPushButton { background: #cba6f7; color: #1e1e2e; "
+                "border-radius: 10px; padding: 3px 10px; font-size: 11px; border: none; }"
+                "QPushButton:hover { background: #d4b5fa; }"
+            )
+        return (
+            "QPushButton { background: #313244; color: #cdd6f4; "
+            "border-radius: 10px; padding: 3px 10px; font-size: 11px; border: none; }"
+            "QPushButton:hover { background: #45475a; }"
+        )
+
+    def _toggle_tag(self, tag: str):
+        if tag in self.active_tags:
+            self.active_tags.discard(tag)
+        else:
+            self.active_tags.add(tag)
+        if tag in self.tag_buttons:
+            self.tag_buttons[tag].setStyleSheet(
+                self._tag_style(tag in self.active_tags)
+            )
+        self._apply_filters()
+
+    def _clear_tags(self):
+        self.active_tags.clear()
+        for tag, btn in self.tag_buttons.items():
+            btn.setStyleSheet(self._tag_style(False))
+        self._apply_filters()
+
+    def _apply_filters(self):
+        query = self.search_box.text().strip().lower()
         for path, card in self.cards.items():
             repo = next((r for r in self.settings.repos if r.path == path), None)
-            visible = not query or (repo and query in repo.label.lower())
-            card.setVisible(visible)
+            matches_search = not query or (repo and query in repo.label.lower())
+            matches_tags = not self.active_tags or (
+                repo and bool(set(repo.tags) & self.active_tags)
+            )
+            card.setVisible(matches_search and matches_tags)
 
     def _select_dirty(self):
         """Highlight dirty repos by scrolling log — future: multi-select cards."""
