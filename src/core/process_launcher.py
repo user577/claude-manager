@@ -21,12 +21,21 @@ class LaunchWorker(QThread):
     finished_err = Signal(str)
 
     def __init__(self, repos: list[RepoInfo], layout: str, count: int,
-                 permission_mode: str = "default", parent=None):
+                 permission_mode: str = "default",
+                 model: str = "default",
+                 initial_prompt: str = "",
+                 use_worktree: bool = False,
+                 session_mode: str = "new",
+                 parent=None):
         super().__init__(parent)
         self.repos = repos[:count]
         self.layout = layout
         self.count = min(count, len(repos))
         self.permission_mode = permission_mode
+        self.model = model
+        self.initial_prompt = initial_prompt
+        self.use_worktree = use_worktree
+        self.session_mode = session_mode
 
     def run(self):
         if self.count == 0:
@@ -42,9 +51,24 @@ class LaunchWorker(QThread):
             titles.append(title)
             claude_cmd = "claude"
             if self.permission_mode == "bypassPermissions":
-                claude_cmd = "claude --dangerously-skip-permissions"
+                claude_cmd += " --dangerously-skip-permissions"
             elif self.permission_mode != "default":
-                claude_cmd = f"claude --permission-mode {self.permission_mode}"
+                claude_cmd += f" --permission-mode {self.permission_mode}"
+
+            if self.model != "default":
+                claude_cmd += f" --model {self.model}"
+
+            if self.use_worktree:
+                claude_cmd += " --worktree"
+
+            if self.session_mode == "continue":
+                claude_cmd += " --continue"
+            elif self.session_mode == "named":
+                claude_cmd += f" --name {repo.label}"
+
+            if self.initial_prompt.strip():
+                escaped = self.initial_prompt.replace('"', '\\"')
+                claude_cmd += f' "{escaped}"'
 
             cmd = [
                 "wt.exe", "--window", "new",

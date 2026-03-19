@@ -22,6 +22,10 @@ class Settings:
     layout: str = "grid_2x2"
     instance_count: int = 4
     permission_mode: str = "default"
+    model: str = "default"
+    initial_prompt: str = ""
+    use_worktree: bool = False
+    session_mode: str = "new"
     github_dir: str = str(DEFAULT_GITHUB_DIR)
     window_x: int = 200
     window_y: int = 200
@@ -43,6 +47,10 @@ class Settings:
                 layout=data.get("layout", "grid_2x2"),
                 instance_count=data.get("instance_count", 4),
                 permission_mode=data.get("permission_mode", "default"),
+                model=data.get("model", "default"),
+                initial_prompt=data.get("initial_prompt", ""),
+                use_worktree=data.get("use_worktree", False),
+                session_mode=data.get("session_mode", "new"),
                 github_dir=data.get("github_dir", str(DEFAULT_GITHUB_DIR)),
                 window_x=data.get("window_x", 200),
                 window_y=data.get("window_y", 200),
@@ -60,6 +68,10 @@ class Settings:
             "layout": self.layout,
             "instance_count": self.instance_count,
             "permission_mode": self.permission_mode,
+            "model": self.model,
+            "initial_prompt": self.initial_prompt,
+            "use_worktree": self.use_worktree,
+            "session_mode": self.session_mode,
             "github_dir": self.github_dir,
             "window_x": self.window_x,
             "window_y": self.window_y,
