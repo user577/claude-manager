@@ -1,11 +1,13 @@
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
-    QMainWindow, QTabWidget, QToolBar, QPushButton, QWidget,
+    QMainWindow, QTabWidget, QToolBar, QPushButton, QWidget, QLabel,
+    QMessageBox,
 )
 
 from src.constants import APP_DISPLAY_NAME, ICON_PATH
 from src.config.settings import Settings
+from src.core.process_launcher import get_ollama_status
 from src.gui.launcher_panel import LauncherPanel
 from src.gui.git_status_panel import GitStatusPanel
 from src.gui.settings_dialog import SettingsDialog
@@ -59,6 +61,25 @@ class MainWindow(QMainWindow):
         stretch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         stretch.setStyleSheet("background: transparent;")
         toolbar.addWidget(stretch)
+
+        # Ollama status dot
+        self.ollama_dot = QLabel("\u25CF")
+        self.ollama_dot.setFixedWidth(28)
+        self.ollama_dot.setAlignment(Qt.AlignCenter)
+        self.ollama_dot.setCursor(Qt.PointingHandCursor)
+        self.ollama_dot.setToolTip("Ollama: checking...")
+        self.ollama_dot.setStyleSheet(
+            "color: #585b70; font-size: 16px; background: transparent;"
+        )
+        self.ollama_dot.mousePressEvent = lambda _: self._show_ollama_info()
+        toolbar.addWidget(self.ollama_dot)
+        self._ollama_status: dict = {}
+
+        # Check ollama on startup and every 30 seconds
+        self._ollama_timer = QTimer(self)
+        self._ollama_timer.timeout.connect(self._check_ollama)
+        self._ollama_timer.start(30_000)
+        QTimer.singleShot(500, self._check_ollama)
 
         self.pin_btn = QPushButton("Pin")
         self.pin_btn.setCheckable(True)
@@ -115,6 +136,51 @@ class MainWindow(QMainWindow):
             self.setWindowFlags(flags & ~Qt.WindowStaysOnTopHint)
             self.pin_btn.setText("Pin")
         self.show()
+
+    def _check_ollama(self):
+        """Ping ollama and update the status dot color."""
+        status = get_ollama_status()
+        self._ollama_status = status
+        if status["running"]:
+            color = "#a6e3a1"  # green
+            tip = f"Ollama: running (v{status['version']})"
+            if status["models"]:
+                tip += f"\nModels: {', '.join(status['models'][:5])}"
+                if len(status["models"]) > 5:
+                    tip += f" (+{len(status['models']) - 5} more)"
+        else:
+            color = "#f38ba8"  # red
+            tip = "Ollama: not running"
+            if status["version"]:
+                tip += f" (installed: {status['version']})"
+        self.ollama_dot.setStyleSheet(
+            f"color: {color}; font-size: 16px; background: transparent;"
+        )
+        self.ollama_dot.setToolTip(tip)
+
+    def _show_ollama_info(self):
+        """Show ollama details when the status dot is clicked."""
+        status = self._ollama_status
+        if not status:
+            QMessageBox.information(self, "Ollama Status", "Status not yet checked.")
+            return
+        if status["running"]:
+            models = status["models"]
+            model_list = "\n".join(f"  - {m}" for m in models) if models else "  (none)"
+            text = (
+                f"<b>Status:</b> Running<br>"
+                f"<b>Version:</b> {status['version']}<br><br>"
+                f"<b>Available models:</b><pre>{model_list}</pre>"
+            )
+        else:
+            text = (
+                "<b>Status:</b> Not running<br><br>"
+                "Start Ollama with:<br>"
+                "<code>ollama serve</code><br><br>"
+                "Or install with:<br>"
+                "<code>winget install Ollama.Ollama</code>"
+            )
+        QMessageBox.information(self, "Ollama Status", text)
 
     def _show_shortcuts(self):
         from PySide6.QtWidgets import QMessageBox

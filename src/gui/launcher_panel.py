@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 
 from src.config.presets import Preset, PresetManager
 from src.config.settings import Settings
-from src.core.process_launcher import LaunchWorker
+from src.core.process_launcher import LaunchWorker, get_ollama_models
 from src.gui.presets_panel import PresetsBar
 from src.gui.widgets.log_output import LogOutput
 
@@ -118,15 +118,45 @@ class LauncherPanel(QWidget):
         mode_row.addWidget(self.mode_combo, 1)
         layout.addLayout(mode_row)
 
-        # --- Model selection row ---
-        model_row = QHBoxLayout()
-        model_row.addWidget(QLabel("Model:"))
+        # --- Backend selection row ---
+        backend_row = QHBoxLayout()
+        backend_row.addWidget(QLabel("Backend:"))
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["Cloud", "Local (Ollama)"])
+        backend_map = {"cloud": 0, "local": 1}
+        self.backend_combo.setCurrentIndex(backend_map.get(self.settings.backend, 0))
+        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        backend_row.addWidget(self.backend_combo, 1)
+        layout.addLayout(backend_row)
+
+        # --- Cloud model selection row ---
+        self.cloud_model_row = QWidget()
+        cloud_model_layout = QHBoxLayout(self.cloud_model_row)
+        cloud_model_layout.setContentsMargins(0, 0, 0, 0)
+        cloud_model_layout.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
         self.model_combo.addItems(["Default", "Sonnet", "Opus", "Haiku"])
         model_map = {"default": 0, "sonnet": 1, "opus": 2, "haiku": 3}
         self.model_combo.setCurrentIndex(model_map.get(self.settings.model, 0))
-        model_row.addWidget(self.model_combo, 1)
-        layout.addLayout(model_row)
+        cloud_model_layout.addWidget(self.model_combo, 1)
+        layout.addWidget(self.cloud_model_row)
+
+        # --- Local model selection row ---
+        self.local_model_row = QWidget()
+        local_model_layout = QHBoxLayout(self.local_model_row)
+        local_model_layout.setContentsMargins(0, 0, 0, 0)
+        local_model_layout.addWidget(QLabel("Local model:"))
+        self.local_model_combo = QComboBox()
+        self.local_model_combo.setPlaceholderText("No models found")
+        self._refresh_ollama_btn = QPushButton("Refresh")
+        self._refresh_ollama_btn.setFixedWidth(70)
+        self._refresh_ollama_btn.clicked.connect(self._refresh_ollama_models)
+        local_model_layout.addWidget(self.local_model_combo, 1)
+        local_model_layout.addWidget(self._refresh_ollama_btn)
+        layout.addWidget(self.local_model_row)
+
+        # Initialize backend visibility
+        self._on_backend_changed(self.backend_combo.currentIndex())
 
         # --- Session handling row ---
         session_row = QHBoxLayout()
@@ -313,12 +343,40 @@ class LauncherPanel(QWidget):
         idx = self.session_combo.currentIndex()
         return ["new", "continue", "named"][idx]
 
+    def _get_backend(self) -> str:
+        return ["cloud", "local"][self.backend_combo.currentIndex()]
+
+    def _get_local_model(self) -> str:
+        return self.local_model_combo.currentText() or ""
+
+    def _on_backend_changed(self, index: int):
+        is_local = index == 1
+        self.cloud_model_row.setVisible(not is_local)
+        self.local_model_row.setVisible(is_local)
+        if is_local and self.local_model_combo.count() == 0:
+            self._refresh_ollama_models()
+
+    def _refresh_ollama_models(self):
+        self.local_model_combo.clear()
+        models = get_ollama_models(force_refresh=True)
+        if models:
+            self.local_model_combo.addItems(models)
+            # Restore saved selection if it exists
+            saved = self.settings.local_model
+            if saved and saved in models:
+                self.local_model_combo.setCurrentText(saved)
+            self.log.log_info(f"Found {len(models)} Ollama model(s)")
+        else:
+            self.log.log_err("No Ollama models found — is Ollama running?")
+
     def save_state(self):
         self._on_check_changed()
         self.settings.instance_count = self.count_spin.value()
         self.settings.layout = self._get_layout_key()
         self.settings.permission_mode = self._get_permission_mode()
         self.settings.model = self._get_model()
+        self.settings.backend = self._get_backend()
+        self.settings.local_model = self._get_local_model()
         self.settings.initial_prompt = self.prompt_edit.text()
         self.settings.use_worktree = self.worktree_check.isChecked()
         self.settings.session_mode = self._get_session_mode()
@@ -342,12 +400,23 @@ class LauncherPanel(QWidget):
 
         mode = self._get_permission_mode()
         model = self._get_model()
+        backend = self._get_backend()
+        local_model = self._get_local_model()
         initial_prompt = self.prompt_edit.text()
         use_worktree = self.worktree_check.isChecked()
         session_mode = self._get_session_mode()
+
+        if backend == "local" and not local_model:
+            self.log.log_err("No local model selected — pull a model with 'ollama pull'")
+            self.launch_btn.setEnabled(True)
+            self.progress.hide()
+            return
+
         self._worker = LaunchWorker(
             enabled, layout, count, mode,
             model=model,
+            backend=backend,
+            local_model=local_model,
             initial_prompt=initial_prompt,
             use_worktree=use_worktree,
             session_mode=session_mode,
@@ -419,6 +488,10 @@ class LauncherPanel(QWidget):
             idx = self.model_combo.currentIndex()
             preset.model = model_keys[idx] if idx < len(model_keys) else "default"
 
+        if hasattr(self, "backend_combo"):
+            preset.backend = self._get_backend()
+            preset.local_model = self._get_local_model()
+
         if hasattr(self, "session_combo"):
             session_keys = ["new", "continue", "resume"]
             idx = self.session_combo.currentIndex()
@@ -462,6 +535,14 @@ class LauncherPanel(QWidget):
         if hasattr(self, "model_combo"):
             model_map = {"default": 0, "opus": 1, "sonnet": 2, "haiku": 3}
             self.model_combo.setCurrentIndex(model_map.get(preset.model, 0))
+
+        if hasattr(self, "backend_combo"):
+            backend_map = {"cloud": 0, "local": 1}
+            self.backend_combo.setCurrentIndex(backend_map.get(preset.backend, 0))
+            if preset.backend == "local" and preset.local_model:
+                idx = self.local_model_combo.findText(preset.local_model)
+                if idx >= 0:
+                    self.local_model_combo.setCurrentIndex(idx)
 
         if hasattr(self, "session_combo"):
             session_map = {"new": 0, "continue": 1, "resume": 2}
