@@ -16,6 +16,8 @@ class RepoStatus:
     untracked_count: int = 0
     ahead: int = 0
     behind: int = 0
+    stash_count: int = 0
+    diverged: bool = False
     has_remote: bool = False
     last_commit: str = ""
     error: str | None = None
@@ -54,6 +56,18 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
             status.has_remote = True
         else:
             status.has_remote = False
+
+        # Stash count
+        r = subprocess.run(
+            ["git", "-C", repo.path, "stash", "list"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            status.stash_count = len([l for l in r.stdout.splitlines() if l.strip()])
+
+        # Divergence detection (both ahead AND behind = diverged)
+        if status.ahead > 0 and status.behind > 0:
+            status.diverged = True
 
         # Last commit
         r = subprocess.run(
