@@ -59,6 +59,22 @@ class LauncherPanel(QWidget):
         controls.addStretch()
         layout.addLayout(controls)
 
+        # --- Permission mode row ---
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems([
+            "Default (ask each time)",
+            "Accept Edits (auto-approve edits)",
+            "Auto (full auto, confirm risky)",
+            "Bypass Permissions (skip all checks)",
+            "Plan (read-only, no edits)",
+        ])
+        mode_map = {"default": 0, "acceptEdits": 1, "auto": 2, "bypassPermissions": 3, "plan": 4}
+        self.mode_combo.setCurrentIndex(mode_map.get(self.settings.permission_mode, 0))
+        mode_row.addWidget(self.mode_combo, 1)
+        layout.addLayout(mode_row)
+
         # --- Launch button ---
         self.launch_btn = QPushButton("Launch Claude")
         self.launch_btn.setObjectName("launchBtn")
@@ -97,10 +113,15 @@ class LauncherPanel(QWidget):
         idx = self.layout_combo.currentIndex()
         return ["grid_2x2", "vertical", "horizontal", "single"][idx]
 
+    def _get_permission_mode(self) -> str:
+        idx = self.mode_combo.currentIndex()
+        return ["default", "acceptEdits", "auto", "bypassPermissions", "plan"][idx]
+
     def save_state(self):
         self._on_check_changed()
         self.settings.instance_count = self.count_spin.value()
         self.settings.layout = self._get_layout_key()
+        self.settings.permission_mode = self._get_permission_mode()
 
     def _on_launch(self):
         self.save_state()
@@ -115,7 +136,8 @@ class LauncherPanel(QWidget):
         self.launch_btn.setEnabled(False)
         self.log.log_info(f"Launching {min(count, len(enabled))} instances...")
 
-        self._worker = LaunchWorker(enabled, layout, count, parent=self)
+        mode = self._get_permission_mode()
+        self._worker = LaunchWorker(enabled, layout, count, mode, parent=self)
         self._worker.status.connect(self.log.log_info)
         self._worker.finished_ok.connect(self._launch_done)
         self._worker.finished_err.connect(self._launch_error)

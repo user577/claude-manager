@@ -20,11 +20,13 @@ class LaunchWorker(QThread):
     finished_ok = Signal()
     finished_err = Signal(str)
 
-    def __init__(self, repos: list[RepoInfo], layout: str, count: int, parent=None):
+    def __init__(self, repos: list[RepoInfo], layout: str, count: int,
+                 permission_mode: str = "default", parent=None):
         super().__init__(parent)
         self.repos = repos[:count]
         self.layout = layout
         self.count = min(count, len(repos))
+        self.permission_mode = permission_mode
 
     def run(self):
         if self.count == 0:
@@ -38,11 +40,17 @@ class LaunchWorker(QThread):
         for i, repo in enumerate(self.repos):
             title = _make_title(repo.label, uid)
             titles.append(title)
+            claude_cmd = "claude"
+            if self.permission_mode == "bypassPermissions":
+                claude_cmd = "claude --dangerously-skip-permissions"
+            elif self.permission_mode != "default":
+                claude_cmd = f"claude --permission-mode {self.permission_mode}"
+
             cmd = [
                 "wt.exe", "--window", "new",
                 "--title", title,
                 "-d", repo.path,
-                "cmd.exe", "/k", "claude",
+                "cmd.exe", "/k", claude_cmd,
             ]
             try:
                 subprocess.Popen(cmd)
