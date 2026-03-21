@@ -13,11 +13,13 @@ def _get_diff_stat(repo_path: str) -> str:
         r = subprocess.run(
             ["git", "-C", repo_path, "diff", "--stat", "HEAD"],
             capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         # Also include untracked files count
         r2 = subprocess.run(
             ["git", "-C", repo_path, "status", "--porcelain"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         untracked = sum(1 for l in r2.stdout.splitlines() if l.startswith("??"))
         stat = r.stdout.strip()

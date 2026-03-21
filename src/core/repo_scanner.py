@@ -30,6 +30,7 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
         r = subprocess.run(
             ["git", "-C", repo.path, "branch", "--show-current"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         status.branch = r.stdout.strip() or "HEAD"
 
@@ -37,6 +38,7 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
         r = subprocess.run(
             ["git", "-C", repo.path, "status", "--porcelain"],
             capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         lines = [l for l in r.stdout.splitlines() if l.strip()]
         status.modified_count = sum(1 for l in lines if not l.startswith("??"))
@@ -47,6 +49,7 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
         r = subprocess.run(
             ["git", "-C", repo.path, "rev-list", "--left-right", "--count", "@{u}...HEAD"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if r.returncode == 0:
             parts = r.stdout.strip().split()
@@ -61,6 +64,7 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
         r = subprocess.run(
             ["git", "-C", repo.path, "stash", "list"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if r.returncode == 0:
             status.stash_count = len([l for l in r.stdout.splitlines() if l.strip()])
@@ -73,6 +77,7 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
         r = subprocess.run(
             ["git", "-C", repo.path, "log", "-1", "--format=%h %s"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         status.last_commit = r.stdout.strip()
 

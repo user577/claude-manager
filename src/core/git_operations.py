@@ -41,7 +41,8 @@ def _run_git(repo_path: str, *args, timeout: int = 30) -> tuple[bool, str]:
     cmd = ["git", "-C", repo_path, *args]
     log.debug("git %s", " ".join(args))
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          creationflags=subprocess.CREATE_NO_WINDOW)
         output = (r.stdout + r.stderr).strip()
         if r.returncode != 0:
             log.warning("git %s failed (rc=%d): %s", args[0], r.returncode, output[:200])
