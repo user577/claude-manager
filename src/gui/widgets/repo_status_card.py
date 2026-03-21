@@ -1,6 +1,6 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
 
 from src.core.repo_scanner import RepoStatus
 from src.gui.styles import COLOR_CLEAN, COLOR_DIRTY, COLOR_ERROR, COLOR_UNKNOWN, COLOR_AHEAD
@@ -26,8 +26,11 @@ class StatusDot(QWidget):
 
 
 class RepoStatusCard(QWidget):
+    launch_requested = Signal(str)  # emits repo path
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._repo_path = ""
         self.setFixedHeight(52)
 
         layout = QHBoxLayout(self)
@@ -57,7 +60,19 @@ class RepoStatusCard(QWidget):
         self.commit_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         layout.addWidget(self.commit_label)
 
+        self.launch_btn = QPushButton("Launch")
+        self.launch_btn.setFixedWidth(60)
+        self.launch_btn.setCursor(Qt.PointingHandCursor)
+        self.launch_btn.setStyleSheet(
+            "QPushButton { background: #45475a; color: #cdd6f4; border: none; "
+            "border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
+            "QPushButton:hover { background: #585b70; }"
+        )
+        self.launch_btn.clicked.connect(lambda: self.launch_requested.emit(self._repo_path))
+        layout.addWidget(self.launch_btn)
+
     def update_status(self, status: RepoStatus):
+        self._repo_path = status.path
         self.name_label.setText(f"{status.label}  ({status.branch})")
 
         # Status details

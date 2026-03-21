@@ -113,6 +113,7 @@ class Settings:
             result = subprocess.run(
                 ["git", "-C", repo.path, "branch", "--show-current"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             return result.stdout.strip() or "HEAD"
         except Exception:

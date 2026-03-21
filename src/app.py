@@ -19,6 +19,45 @@ def check_prerequisites() -> list[str]:
     return missing
 
 
+def _acquire_single_instance_lock():
+    """Acquire a named mutex to enforce single instance. Returns handle or None."""
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, True, "Global\\ClaudeManager_SingleInstance")
+    ERROR_ALREADY_EXISTS = 183
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(mutex)
+        return None
+    return mutex
+
+
+def _focus_existing_window():
+    """Find and bring the existing Claude Manager window to front."""
+    import ctypes
+    import ctypes.wintypes
+
+    EnumWindows = ctypes.windll.user32.EnumWindows
+    GetWindowTextW = ctypes.windll.user32.GetWindowTextW
+    SetForegroundWindow = ctypes.windll.user32.SetForegroundWindow
+    ShowWindow = ctypes.windll.user32.ShowWindow
+    IsIconic = ctypes.windll.user32.IsIconic
+    SW_RESTORE = 9
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+    buf = ctypes.create_unicode_buffer(256)
+
+    def callback(hwnd, _):
+        GetWindowTextW(hwnd, buf, 256)
+        if APP_DISPLAY_NAME in buf.value:
+            if IsIconic(hwnd):
+                ShowWindow(hwnd, SW_RESTORE)
+            SetForegroundWindow(hwnd)
+            return False  # stop enumerating
+        return True
+
+    EnumWindows(WNDENUMPROC(callback), 0)
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
@@ -26,6 +65,12 @@ def main():
 
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
+
+    # Single instance check
+    mutex = _acquire_single_instance_lock()
+    if mutex is None:
+        _focus_existing_window()
+        sys.exit(0)
 
     # Windows taskbar icon grouping
     try:

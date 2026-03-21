@@ -379,9 +379,10 @@ class LauncherPanel(QWidget):
         self.cloud_model_row.setVisible(not is_local)
         self.local_model_row.setVisible(is_local)
         self.pull_model_row.setVisible(is_local)
-        self.launch_btn.setText(
-            "Launch Claude (Local)" if is_local else "Launch Claude"
-        )
+        if hasattr(self, "launch_btn"):
+            self.launch_btn.setText(
+                "Launch Claude (Local)" if is_local else "Launch Claude"
+            )
         if is_local and self.local_model_combo.count() == 0:
             self._refresh_ollama_models()
 

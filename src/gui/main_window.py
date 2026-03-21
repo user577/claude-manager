@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
             x = (screen_geo.width() - w) // 2
             y = (screen_geo.height() - h) // 2
         self.setGeometry(x, y, w, h)
+        self.setMinimumWidth(580)
 
         # --- Toolbar ---
         toolbar = QToolBar()

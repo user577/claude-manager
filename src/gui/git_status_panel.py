@@ -1,3 +1,6 @@
+import subprocess
+import uuid
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
@@ -73,12 +76,12 @@ class GitStatusPanel(QWidget):
         # --- Quick-select buttons ---
         select_row = QHBoxLayout()
         dirty_btn = QPushButton("Select Dirty")
-        dirty_btn.setFixedWidth(100)
+        dirty_btn.setMinimumWidth(100)
         dirty_btn.clicked.connect(self._select_dirty)
         select_row.addWidget(dirty_btn)
 
         ahead_btn = QPushButton("Select Ahead")
-        ahead_btn.setFixedWidth(100)
+        ahead_btn.setMinimumWidth(100)
         ahead_btn.clicked.connect(self._select_ahead)
         select_row.addWidget(ahead_btn)
 
@@ -102,13 +105,15 @@ class GitStatusPanel(QWidget):
         # --- Push / Sync row ---
         action_row = QHBoxLayout()
 
-        self.push_btn = QPushButton("Push All")
+        self.push_btn = QPushButton("Push Ahead")
         self.push_btn.setObjectName("pushBtn")
+        self.push_btn.setToolTip("Push repos that are strictly ahead (skips diverged repos)")
         self.push_btn.clicked.connect(self._on_push)
         action_row.addWidget(self.push_btn)
 
         self.sync_btn = QPushButton("Fetch && Pull All")
         self.sync_btn.setObjectName("syncBtn")
+        self.sync_btn.setToolTip("Safe: fetch + fast-forward pull only (never overwrites remote)")
         self.sync_btn.clicked.connect(self._on_sync)
         action_row.addWidget(self.sync_btn)
 
@@ -157,6 +162,7 @@ class GitStatusPanel(QWidget):
                     path=repo.path, label=repo.label, error="Path not found"))
             else:
                 card.update_status(RepoStatus(path=repo.path, label=repo.label))
+            card.launch_requested.connect(self._launch_single)
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
 
@@ -351,20 +357,59 @@ class GitStatusPanel(QWidget):
         self._start_operation("commit", dirty, msg)
 
     def _on_push(self):
-        # Push repos that are ahead or just committed
-        pushable = [r for r in self.settings.repos
-                    if r.path in self._statuses and (
-                        self._statuses[r.path].ahead > 0
-                        or self._statuses[r.path].dirty
-                    )]
+        # Only push repos that are strictly ahead — skip diverged or behind
+        pushable = []
+        skipped = []
+        for r in self.settings.repos:
+            s = self._statuses.get(r.path)
+            if not s or not s.has_remote:
+                continue
+            if s.diverged or s.behind > 0:
+                skipped.append(r.label)
+            elif s.ahead > 0:
+                pushable.append(r)
+
+        if skipped:
+            self.log.log_info(f"Skipping diverged/behind: {', '.join(skipped)}")
         if not pushable:
-            # Push all that have remotes
-            pushable = [r for r in self.settings.repos
-                        if r.path in self._statuses and self._statuses[r.path].has_remote]
-        self.log.log_info(f"Pushing {len(pushable)} repos...")
+            self.log.log_info("No repos are ahead — nothing to push")
+            return
+
+        names = ", ".join(r.label for r in pushable)
+        self.log.log_info(f"Pushing {len(pushable)} repos: {names}")
         self._start_operation("push", pushable)
 
     def _on_sync(self):
         all_repos = [r for r in self.settings.repos if r.exists()]
         self.log.log_info(f"Fetching & pulling {len(all_repos)} repos...")
         self._start_operation("fetch_pull", all_repos)
+
+    def _launch_single(self, repo_path: str):
+        """Launch a single Claude instance scoped to the given repo."""
+        repo = next((r for r in self.settings.repos if r.path == repo_path), None)
+        if not repo:
+            self.log.log_err(f"Repo not found: {repo_path}")
+            return
+
+        uid = uuid.uuid4().hex[:8]
+        title = f"Claude-{repo.label}-{uid}"
+
+        guardrail = (
+            f"You are working in the project at {repo.path}. "
+            "All new files, edits, and code generation MUST stay within this "
+            "project directory. Do not create or modify files outside of it."
+        )
+        escaped = guardrail.replace('"', '\\"')
+        claude_cmd = f'claude "{escaped}"'
+
+        cmd = [
+            "wt.exe", "--window", "new",
+            "--title", title,
+            "-d", repo.path,
+            "cmd.exe", "/k", claude_cmd,
+        ]
+        try:
+            subprocess.Popen(cmd)
+            self.log.log_ok(f"Launched Claude in {repo.label}")
+        except Exception as e:
+            self.log.log_err(f"Failed to launch: {e}")
