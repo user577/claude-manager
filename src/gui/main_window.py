@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(20, 20))
         toolbar.setStyleSheet(
-            "QToolBar { background: #181825; border-bottom: 1px solid #45475a; spacing: 4px; padding: 4px; }"
+            "QToolBar { background: #252526; border-bottom: 1px solid #474747; spacing: 4px; padding: 4px; }"
         )
 
         toolbar.addWidget(self._make_toolbar_label())
@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
         self.ollama_dot.setCursor(Qt.PointingHandCursor)
         self.ollama_dot.setToolTip("Ollama: checking...")
         self.ollama_dot.setStyleSheet(
-            "color: #585b70; font-size: 16px; background: transparent;"
+            "color: #6e6e6e; font-size: 16px; background: transparent;"
         )
         self.ollama_dot.mousePressEvent = lambda _: self._show_ollama_info()
         toolbar.addWidget(self.ollama_dot)
@@ -126,7 +126,7 @@ class MainWindow(QMainWindow):
     def _make_toolbar_label(self) -> QWidget:
         from PySide6.QtWidgets import QLabel
         lbl = QLabel(f"  {APP_DISPLAY_NAME}")
-        lbl.setStyleSheet("color: #cba6f7; font-weight: bold; font-size: 14px; background: transparent;")
+        lbl.setStyleSheet("color: #007acc; font-weight: bold; font-size: 14px; background: transparent;")
         return lbl
 
     def _toggle_on_top(self, checked: bool):
@@ -151,14 +151,14 @@ class MainWindow(QMainWindow):
         """Update the status dot from the background worker's result."""
         self._ollama_status = status
         if status["running"]:
-            color = "#a6e3a1"  # green
+            color = "#4ec963"  # green
             tip = f"Ollama: running (v{status['version']})"
             if status["models"]:
                 tip += f"\nModels: {', '.join(status['models'][:5])}"
                 if len(status["models"]) > 5:
                     tip += f" (+{len(status['models']) - 5} more)"
         else:
-            color = "#f38ba8"  # red
+            color = "#f44747"  # red
             tip = "Ollama: not running"
             if status["version"]:
                 tip += f" (installed: {status['version']})"
