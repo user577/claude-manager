@@ -72,9 +72,9 @@ class CommitConfirmDialog(QDialog):
         ok_btn = QPushButton("Commit All")
         ok_btn.setObjectName("commitBtn")
         ok_btn.setStyleSheet(
-            "QPushButton { background: #a6e3a1; color: #1e1e2e; border: none; "
+            "QPushButton { background: #4ec963; color: #1e1e1e; border: none; "
             "font-weight: bold; padding: 8px 20px; border-radius: 6px; }"
-            "QPushButton:hover { background: #c6f0c2; }"
+            "QPushButton:hover { background: #6dd680; }"
         )
         ok_btn.clicked.connect(self.accept)
         btn_row.addWidget(ok_btn)

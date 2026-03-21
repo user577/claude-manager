@@ -14,12 +14,12 @@ class LogOutput(QTextEdit):
     def log(self, message: str, success: bool | None = None):
         ts = datetime.now().strftime("%H:%M:%S")
         if success is True:
-            color = "#a6e3a1"
+            color = "#4ec963"
         elif success is False:
-            color = "#f38ba8"
+            color = "#f44747"
         else:
-            color = "#a6adc8"
-        self.append(f'<span style="color:#585b70">[{ts}]</span> '
+            color = "#9e9e9e"
+        self.append(f'<span style="color:#6e6e6e">[{ts}]</span> '
                      f'<span style="color:{color}">{message}</span>')
         self.moveCursor(QTextCursor.End)
 

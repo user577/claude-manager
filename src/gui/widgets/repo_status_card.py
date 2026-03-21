@@ -47,7 +47,7 @@ class RepoStatusCard(QWidget):
         info_layout.addWidget(self.name_label)
 
         self.detail_label = QLabel("")
-        self.detail_label.setStyleSheet("font-size: 11px; color: #a6adc8;")
+        self.detail_label.setStyleSheet("font-size: 11px; color: #9e9e9e;")
         info_layout.addWidget(self.detail_label)
 
         layout.addLayout(info_layout, 1)
@@ -55,7 +55,7 @@ class RepoStatusCard(QWidget):
         self.commit_label = QLabel("")
         self.commit_label.setStyleSheet(
             "font-family: 'Cascadia Mono', 'Consolas', monospace; "
-            "font-size: 11px; color: #585b70;"
+            "font-size: 11px; color: #6e6e6e;"
         )
         self.commit_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         layout.addWidget(self.commit_label)
@@ -64,9 +64,9 @@ class RepoStatusCard(QWidget):
         self.launch_btn.setFixedWidth(60)
         self.launch_btn.setCursor(Qt.PointingHandCursor)
         self.launch_btn.setStyleSheet(
-            "QPushButton { background: #45475a; color: #cdd6f4; border: none; "
+            "QPushButton { background: #474747; color: #cccccc; border: none; "
             "border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
-            "QPushButton:hover { background: #585b70; }"
+            "QPushButton:hover { background: #555555; }"
         )
         self.launch_btn.clicked.connect(lambda: self.launch_requested.emit(self._repo_path))
         layout.addWidget(self.launch_btn)

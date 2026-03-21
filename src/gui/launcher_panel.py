@@ -228,8 +228,8 @@ class LauncherPanel(QWidget):
         self.progress.setMaximumHeight(6)
         self.progress.setTextVisible(False)
         self.progress.setStyleSheet(
-            "QProgressBar { background: #313244; border: none; border-radius: 3px; }"
-            "QProgressBar::chunk { background: #89b4fa; border-radius: 3px; }"
+            "QProgressBar { background: #3c3c3c; border: none; border-radius: 3px; }"
+            "QProgressBar::chunk { background: #007acc; border-radius: 3px; }"
         )
         self.progress.hide()
         layout.addWidget(self.progress)
@@ -251,7 +251,7 @@ class LauncherPanel(QWidget):
                 cb = QCheckBox(f"{repo.label}  (MISSING)")
                 cb.setChecked(False)
                 cb.setEnabled(False)
-                cb.setStyleSheet("color: #f38ba8;")
+                cb.setStyleSheet("color: #f44747;")
                 cb.repo_info = repo
                 repo.enabled = False
             else:
@@ -300,9 +300,9 @@ class LauncherPanel(QWidget):
         clear_btn = QPushButton("Clear")
         clear_btn.setCursor(Qt.PointingHandCursor)
         clear_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #585b70; border: none; "
+            "QPushButton { background: transparent; color: #6e6e6e; border: none; "
             "font-size: 11px; padding: 3px 6px; }"
-            "QPushButton:hover { color: #cdd6f4; }"
+            "QPushButton:hover { color: #cccccc; }"
         )
         clear_btn.clicked.connect(self._clear_tags)
         self.tag_bar.addWidget(clear_btn)
@@ -312,14 +312,14 @@ class LauncherPanel(QWidget):
     def _tag_style(active: bool) -> str:
         if active:
             return (
-                "QPushButton { background: #cba6f7; color: #1e1e2e; "
+                "QPushButton { background: #007acc; color: #ffffff; "
                 "border-radius: 10px; padding: 3px 10px; font-size: 11px; border: none; }"
-                "QPushButton:hover { background: #d4b5fa; }"
+                "QPushButton:hover { background: #1a8ad4; }"
             )
         return (
-            "QPushButton { background: #313244; color: #cdd6f4; "
+            "QPushButton { background: #3c3c3c; color: #cccccc; "
             "border-radius: 10px; padding: 3px 10px; font-size: 11px; border: none; }"
-            "QPushButton:hover { background: #45475a; }"
+            "QPushButton:hover { background: #474747; }"
         )
 
     def _toggle_tag(self, tag: str):
