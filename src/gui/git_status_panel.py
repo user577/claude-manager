@@ -1,5 +1,6 @@
 import subprocess
 import uuid
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -7,9 +8,9 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QProgressBar,
 )
 
-from src.config.settings import Settings
-from src.core.repo_scanner import RepoScannerThread, RepoStatus
-from src.core.git_operations import GitWorker
+from src.config.settings import Settings, RepoInfo
+from src.core.repo_scanner import RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo
+from src.core.git_operations import GitWorker, CloneWorker
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
 from src.gui.commit_confirm_dialog import CommitConfirmDialog
@@ -85,6 +86,18 @@ class GitStatusPanel(QWidget):
         ahead_btn.clicked.connect(self._select_ahead)
         select_row.addWidget(ahead_btn)
 
+        behind_btn = QPushButton("Select Behind")
+        behind_btn.setMinimumWidth(100)
+        behind_btn.clicked.connect(self._select_behind)
+        select_row.addWidget(behind_btn)
+
+        self.out_of_sync_btn = QPushButton("Out of Sync")
+        self.out_of_sync_btn.setMinimumWidth(100)
+        self.out_of_sync_btn.setCheckable(True)
+        self.out_of_sync_btn.setToolTip("Show only repos that are ahead, behind, diverged, or dirty")
+        self.out_of_sync_btn.clicked.connect(self._apply_filters)
+        select_row.addWidget(self.out_of_sync_btn)
+
         select_row.addStretch()
         layout.addLayout(select_row)
 
@@ -116,6 +129,27 @@ class GitStatusPanel(QWidget):
         self.sync_btn.setToolTip("Safe: fetch + fast-forward pull only (never overwrites remote)")
         self.sync_btn.clicked.connect(self._on_sync)
         action_row.addWidget(self.sync_btn)
+
+        self.github_btn = QPushButton("Check GitHub")
+        self.github_btn.setStyleSheet(
+            "QPushButton { background: #6e40c9; color: #ffffff; border: none; font-weight: bold; }"
+            "QPushButton:hover { background: #8b5cf6; }"
+        )
+        self.github_btn.setToolTip("Find repos on your GitHub account that aren't cloned locally")
+        self.github_btn.clicked.connect(self._on_check_github)
+        action_row.addWidget(self.github_btn)
+
+        self.clone_btn = QPushButton("Clone Missing")
+        self.clone_btn.setStyleSheet(
+            "QPushButton { background: #6e40c9; color: #ffffff; border: none; font-weight: bold; }"
+            "QPushButton:hover { background: #8b5cf6; }"
+        )
+        self.clone_btn.setToolTip("Clone all uncloned repos listed above")
+        self.clone_btn.clicked.connect(self._on_clone_missing)
+        self.clone_btn.hide()
+        action_row.addWidget(self.clone_btn)
+
+        self._pending_clones: list[RemoteRepo] = []
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setStyleSheet(
@@ -257,13 +291,21 @@ class GitStatusPanel(QWidget):
 
     def _apply_filters(self):
         query = self.search_box.text().strip().lower()
+        filter_sync = self.out_of_sync_btn.isChecked()
         for path, card in self.cards.items():
             repo = next((r for r in self.settings.repos if r.path == path), None)
             matches_search = not query or (repo and query in repo.label.lower())
             matches_tags = not self.active_tags or (
                 repo and bool(set(repo.tags) & self.active_tags)
             )
-            card.setVisible(matches_search and matches_tags)
+            if filter_sync:
+                s = self._statuses.get(path)
+                matches_sync = s is not None and (
+                    s.dirty or s.ahead > 0 or s.behind > 0 or s.diverged
+                )
+            else:
+                matches_sync = True
+            card.setVisible(matches_search and matches_tags and matches_sync)
 
     def _select_dirty(self):
         """Highlight dirty repos by scrolling log — future: multi-select cards."""
@@ -282,10 +324,20 @@ class GitStatusPanel(QWidget):
         else:
             self.log.log_info("No repos are ahead of remote")
 
+    def _select_behind(self):
+        behind = [s.label for s in self._statuses.values() if s.behind > 0]
+        if behind:
+            self.search_box.clear()
+            self.log.log_info(f"Behind repos ({len(behind)}): {', '.join(behind)}")
+        else:
+            self.log.log_info("All repos are up to date with remote")
+
     def _set_buttons_enabled(self, enabled: bool):
         self.commit_btn.setEnabled(enabled and bool(self.commit_msg.text().strip()))
         self.push_btn.setEnabled(enabled)
         self.sync_btn.setEnabled(enabled)
+        self.github_btn.setEnabled(enabled)
+        self.clone_btn.setEnabled(enabled)
         self.refresh_btn.setEnabled(enabled)
         self.cancel_btn.setVisible(not enabled)
 
@@ -383,6 +435,87 @@ class GitStatusPanel(QWidget):
         all_repos = [r for r in self.settings.repos if r.exists()]
         self.log.log_info(f"Fetching & pulling {len(all_repos)} repos...")
         self._start_operation("fetch_pull", all_repos)
+
+    def _on_check_github(self):
+        """Query GitHub for repos not cloned locally."""
+        self.github_btn.setEnabled(False)
+        self.log.log_info("Checking GitHub for uncloned repos...")
+
+        # Collect local repo folder names
+        github_dir = Path(self.settings.github_dir)
+        local_names = set()
+        if github_dir.is_dir():
+            for child in github_dir.iterdir():
+                if child.is_dir():
+                    local_names.add(child.name)
+
+        self._gh_sync = GitHubSyncThread(local_names, parent=self)
+        self._gh_sync.finished.connect(self._on_github_sync_done)
+        self._gh_sync.start()
+
+    def _on_github_sync_done(self, missing: list, errors: list):
+        self.github_btn.setEnabled(True)
+        self._gh_sync = None
+
+        if errors:
+            for e in errors:
+                self.log.log_err(e)
+            return
+
+        if not missing:
+            self.log.log_ok("All GitHub repos are cloned locally")
+            self._pending_clones = []
+            self.clone_btn.hide()
+            return
+
+        self._pending_clones = missing
+        names = ", ".join(r.name for r in missing)
+        self.log.log_info(f"Uncloned ({len(missing)}): {names}")
+        self.clone_btn.show()
+
+    def _on_clone_missing(self):
+        if not self._pending_clones:
+            return
+
+        github_dir = self.settings.github_dir
+        clone_list = [
+            (r.name, r.clone_url, str(Path(github_dir) / r.name))
+            for r in self._pending_clones
+        ]
+        self._pending_clones = []
+        self.clone_btn.hide()
+
+        self._set_buttons_enabled(False)
+        self.progress.setRange(0, len(clone_list))
+        self.progress.setValue(0)
+        self.progress.show()
+        self._clone_count = 0
+
+        self._clone_worker = CloneWorker(clone_list, parent=self)
+        self._clone_worker.repo_done.connect(self._on_clone_repo_done)
+        self._clone_worker.all_done.connect(self._on_clone_all_done)
+        self._clone_worker.start()
+
+    def _on_clone_repo_done(self, name: str, success: bool, output: str):
+        self._clone_count += 1
+        self.progress.setValue(self._clone_count)
+        short = output.split("\n")[0][:120] if output else ""
+        if success:
+            self.log.log_ok(f"[clone] {name}: {short}")
+            # Auto-register in settings
+            dest = str(Path(self.settings.github_dir) / name)
+            if not any(r.path == dest for r in self.settings.repos):
+                self.settings.repos.append(RepoInfo(path=dest, label=name))
+                self.settings.save()
+        else:
+            self.log.log_err(f"[clone] {name}: {short}")
+
+    def _on_clone_all_done(self):
+        self._set_buttons_enabled(True)
+        self.progress.hide()
+        self._clone_worker = None
+        self._build_cards()
+        self.scan_all()
 
     def _launch_single(self, repo_path: str):
         """Launch a single Claude instance scoped to the given repo."""

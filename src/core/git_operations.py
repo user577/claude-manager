@@ -87,6 +87,26 @@ def pull_repo(repo_path: str) -> tuple[bool, str]:
     return _run_git(repo_path, "pull", "--ff-only", timeout=60)
 
 
+def clone_repo(clone_url: str, dest_path: str) -> tuple[bool, str]:
+    """Clone a remote repo into dest_path."""
+    try:
+        r = subprocess.run(
+            ["git", "clone", clone_url, dest_path],
+            capture_output=True, text=True, timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        output = (r.stdout + r.stderr).strip()
+        if r.returncode != 0:
+            log.warning("git clone failed (rc=%d): %s", r.returncode, output[:200])
+        return r.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        log.error("git clone timed out")
+        return False, "Timed out"
+    except Exception as e:
+        log.error("git clone error: %s", e)
+        return False, str(e)
+
+
 def fetch_and_pull_repo(repo_path: str) -> tuple[bool, str]:
     ok_f, out_f = fetch_repo(repo_path)
     if not ok_f:
@@ -128,4 +148,26 @@ class GitWorker(QThread):
                 ok, out = False, f"Unknown operation: {self.operation}"
 
             self.repo_done.emit(label, self.operation, ok, out)
+        self.all_done.emit()
+
+
+class CloneWorker(QThread):
+    """Clones multiple repos sequentially. Each item is (name, clone_url, dest_path)."""
+    repo_done = Signal(str, bool, str)  # name, success, output
+    all_done = Signal()
+
+    def __init__(self, clone_list: list[tuple[str, str, str]], parent=None):
+        super().__init__(parent)
+        self.clone_list = clone_list
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        for name, url, dest in self.clone_list:
+            if self._cancelled:
+                break
+            ok, out = clone_repo(url, dest)
+            self.repo_done.emit(name, ok, out)
         self.all_done.emit()

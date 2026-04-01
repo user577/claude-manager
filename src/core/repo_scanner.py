@@ -1,3 +1,4 @@
+import json
 import subprocess
 from dataclasses import dataclass
 
@@ -44,6 +45,13 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
         status.modified_count = sum(1 for l in lines if not l.startswith("??"))
         status.untracked_count = sum(1 for l in lines if l.startswith("??"))
         status.dirty = len(lines) > 0
+
+        # Fetch remote tracking refs so ahead/behind is current
+        subprocess.run(
+            ["git", "-C", repo.path, "fetch", "--quiet"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
 
         # Ahead/behind
         r = subprocess.run(
@@ -100,3 +108,47 @@ class RepoScannerThread(QThread):
             result = scan_one(repo)
             self.status_updated.emit(result)
         self.scan_complete.emit()
+
+
+@dataclass
+class RemoteRepo:
+    name: str
+    clone_url: str
+    description: str
+    is_private: bool
+
+
+class GitHubSyncThread(QThread):
+    """Queries GitHub for all repos owned by the authenticated user and
+    compares against locally cloned repos."""
+    finished = Signal(list, list)  # (missing: list[RemoteRepo], error: list[str])
+
+    def __init__(self, local_names: set[str], parent=None):
+        super().__init__(parent)
+        self.local_names = local_names
+
+    def run(self):
+        try:
+            r = subprocess.run(
+                ["gh", "repo", "list", "--limit", "200", "--json",
+                 "name,url,description,isPrivate"],
+                capture_output=True, text=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if r.returncode != 0:
+                self.finished.emit([], [f"gh repo list failed: {r.stderr.strip()}"])
+                return
+
+            repos = json.loads(r.stdout)
+            missing = []
+            for repo in repos:
+                if repo["name"] not in self.local_names:
+                    missing.append(RemoteRepo(
+                        name=repo["name"],
+                        clone_url=repo["url"],
+                        description=repo.get("description") or "",
+                        is_private=repo.get("isPrivate", False),
+                    ))
+            self.finished.emit(missing, [])
+        except Exception as e:
+            self.finished.emit([], [str(e)])
