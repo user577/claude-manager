@@ -3,7 +3,7 @@ from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
 
 from src.core.repo_scanner import RepoStatus
-from src.gui.styles import COLOR_CLEAN, COLOR_DIRTY, COLOR_ERROR, COLOR_UNKNOWN, COLOR_AHEAD
+from src.gui.styles import COLOR_CLEAN, COLOR_DIRTY, COLOR_ERROR, COLOR_UNKNOWN, COLOR_AHEAD, COLOR_BEHIND
 
 
 class StatusDot(QWidget):
@@ -105,6 +105,8 @@ class RepoStatusCard(QWidget):
             self.dot.set_color(COLOR_DIRTY)
         elif status.ahead:
             self.dot.set_color(COLOR_AHEAD)
+        elif status.behind:
+            self.dot.set_color(COLOR_BEHIND)
         else:
             self.dot.set_color(COLOR_CLEAN)
 
