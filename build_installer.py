@@ -8,7 +8,7 @@ ROOT = Path(__file__).parent
 VERSION = "1.0.0"
 
 ISCC_PATHS = [
-    Path(r"C:\Users\user\AppData\Local\Programs\Inno Setup 6\ISCC.exe"),
+    Path.home() / r"AppData\Local\Programs\Inno Setup 6\ISCC.exe",
     Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
     Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
 ]
