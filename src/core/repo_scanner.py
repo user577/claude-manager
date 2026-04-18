@@ -21,6 +21,7 @@ class RepoStatus:
     diverged: bool = False
     has_remote: bool = False
     last_commit: str = ""
+    last_commit_date: str = ""  # ISO 8601 for sorting
     error: str | None = None
 
 
@@ -88,6 +89,14 @@ def scan_one(repo: RepoInfo) -> RepoStatus:
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         status.last_commit = r.stdout.strip()
+
+        # Last commit date (ISO 8601 for sorting)
+        r = subprocess.run(
+            ["git", "-C", repo.path, "log", "-1", "--format=%aI"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        status.last_commit_date = r.stdout.strip()
 
     except Exception as e:
         status.error = str(e)

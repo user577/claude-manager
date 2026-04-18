@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QScrollArea, QFrame, QProgressBar,
+    QScrollArea, QFrame, QProgressBar, QComboBox,
 )
 
 from src.config.settings import Settings, RepoInfo
@@ -43,12 +43,26 @@ class GitStatusPanel(QWidget):
         top_row.addWidget(self.refresh_btn)
         layout.addLayout(top_row)
 
-        # --- Search filter ---
+        # --- Search filter + sort ---
+        filter_row = QHBoxLayout()
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Filter repos...")
         self.search_box.setClearButtonEnabled(True)
         self.search_box.textChanged.connect(self._apply_filters)
-        layout.addWidget(self.search_box)
+        filter_row.addWidget(self.search_box, 1)
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("Name", "name")
+        self.sort_combo.addItem("Recently Modified", "date")
+        self.sort_combo.setFixedWidth(150)
+        self.sort_combo.setToolTip("Sort repos by name or last commit date")
+        # Restore saved sort preference
+        saved_idx = self.sort_combo.findData(self.settings.repo_sort)
+        if saved_idx >= 0:
+            self.sort_combo.setCurrentIndex(saved_idx)
+        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
+        filter_row.addWidget(self.sort_combo)
+        layout.addLayout(filter_row)
 
         # --- Tag filter ---
         self.tag_bar_widget = QWidget()
@@ -223,6 +237,7 @@ class GitStatusPanel(QWidget):
         self.scan_label.setText("")
         self.refresh_btn.setEnabled(True)
         self._scanner = None
+        self._reorder_cards()
 
     def _refresh_tag_bar(self):
         for btn in self.tag_buttons.values():
@@ -306,6 +321,33 @@ class GitStatusPanel(QWidget):
             else:
                 matches_sync = True
             card.setVisible(matches_search and matches_tags and matches_sync)
+
+    def _on_sort_changed(self):
+        self.settings.repo_sort = self.sort_combo.currentData()
+        self.settings.save()
+        self._reorder_cards()
+
+    def _reorder_cards(self):
+        sort_key = self.sort_combo.currentData()
+        paths = list(self.cards.keys())
+        if sort_key == "date":
+            # Sort by last_commit_date descending; repos without dates go last
+            paths.sort(
+                key=lambda p: self._statuses[p].last_commit_date
+                if p in self._statuses and self._statuses[p].last_commit_date
+                else "",
+                reverse=True,
+            )
+        else:
+            # Sort alphabetically by label
+            paths.sort(
+                key=lambda p: self._statuses[p].label.lower()
+                if p in self._statuses else p.lower()
+            )
+        for i, path in enumerate(paths):
+            card = self.cards[path]
+            self.cards_layout.removeWidget(card)
+            self.cards_layout.insertWidget(i, card)
 
     def _select_dirty(self):
         """Highlight dirty repos by scrolling log — future: multi-select cards."""
