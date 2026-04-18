@@ -30,6 +30,7 @@ class Settings:
     use_worktree: bool = False
     session_mode: str = "new"
     github_dir: str = str(DEFAULT_GITHUB_DIR)
+    repo_sort: str = "name"
     window_x: int = 200
     window_y: int = 200
     window_width: int = 520
@@ -57,6 +58,7 @@ class Settings:
                 use_worktree=data.get("use_worktree", False),
                 session_mode=data.get("session_mode", "new"),
                 github_dir=data.get("github_dir", str(DEFAULT_GITHUB_DIR)),
+                repo_sort=data.get("repo_sort", "name"),
                 window_x=data.get("window_x", 200),
                 window_y=data.get("window_y", 200),
                 window_width=data.get("window_width", 520),
@@ -80,6 +82,7 @@ class Settings:
             "use_worktree": self.use_worktree,
             "session_mode": self.session_mode,
             "github_dir": self.github_dir,
+            "repo_sort": self.repo_sort,
             "window_x": self.window_x,
             "window_y": self.window_y,
             "window_width": self.window_width,
