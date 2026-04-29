@@ -22,14 +22,16 @@ block_cipher = None
 a = Analysis(
     ["src/app.py"],
     pathex=[],
-    binaries=[],
+    binaries=[
+        (".venv/Lib/site-packages/PySide6/msvcp140.dll", "."),
+    ],
     datas=[
         ("app_icon.ico", "."),
     ],
     hiddenimports=_discover_src_modules(),
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["hooks/rthook_dll_dirs.py"],
     excludes=["tkinter", "unittest", "pytest"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

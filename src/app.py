@@ -1,6 +1,30 @@
 """Entry point for both dev and frozen (PyInstaller) modes."""
+import ctypes
+import ctypes.wintypes
+import os
 import shutil
 import sys
+
+
+def _register_qt_dll_dirs():
+    """Register PySide6's directory as a DLL search path before Qt loads.
+
+    PyInstaller 6 calls os.add_dll_directory(_MEIPASS) in its bootstrapper,
+    activating LOAD_LIBRARY_SEARCH_DEFAULT_DIRS mode. Under that mode only
+    _MEIPASS (_internal/) and System32 are searched — not _internal/PySide6/.
+    Qt6Core.dll's PE import for icuuc.dll therefore resolves to the System32
+    ICU v72 stub (missing Qt's v73 procedures) instead of PySide6's bundled
+    ICU v73. Registering _internal/PySide6/ adds it to the search set, which
+    is checked before System32.
+    """
+    if not hasattr(sys, '_MEIPASS'):
+        return
+    pyside6_dir = os.path.join(sys._MEIPASS, 'PySide6')
+    if os.path.isdir(pyside6_dir):
+        os.add_dll_directory(pyside6_dir)
+
+
+_register_qt_dll_dirs()
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
