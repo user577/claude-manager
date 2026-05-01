@@ -27,6 +27,7 @@ class StatusDot(QWidget):
 
 class RepoStatusCard(QWidget):
     launch_requested = Signal(str)  # emits repo path
+    launch_auto_requested = Signal(str)  # emits repo path — dangerously-skip-permissions
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,6 +71,22 @@ class RepoStatusCard(QWidget):
         )
         self.launch_btn.clicked.connect(lambda: self.launch_requested.emit(self._repo_path))
         layout.addWidget(self.launch_btn)
+
+        self.launch_auto_btn = QPushButton("Launch Auto")
+        self.launch_auto_btn.setFixedWidth(84)
+        self.launch_auto_btn.setCursor(Qt.PointingHandCursor)
+        self.launch_auto_btn.setToolTip(
+            "Launch with --dangerously-skip-permissions (no confirmation prompts)"
+        )
+        self.launch_auto_btn.setStyleSheet(
+            "QPushButton { background: #8b3a3a; color: #ffffff; border: none; "
+            "border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: bold; }"
+            "QPushButton:hover { background: #a84545; }"
+        )
+        self.launch_auto_btn.clicked.connect(
+            lambda: self.launch_auto_requested.emit(self._repo_path)
+        )
+        layout.addWidget(self.launch_auto_btn)
 
     def update_status(self, status: RepoStatus):
         self._repo_path = status.path

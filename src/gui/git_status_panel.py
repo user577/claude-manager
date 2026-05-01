@@ -39,8 +39,16 @@ class GitStatusPanel(QWidget):
         top_row.addWidget(self.scan_label)
 
         self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.setToolTip("Fast local rescan (uses cached fetch state)")
         self.refresh_btn.clicked.connect(self.scan_all)
         top_row.addWidget(self.refresh_btn)
+
+        self.fetch_refresh_btn = QPushButton("Fetch")
+        self.fetch_refresh_btn.setToolTip(
+            "Fetch all remotes, then refresh — slower but updates ahead/behind"
+        )
+        self.fetch_refresh_btn.clicked.connect(lambda: self.scan_all(fetch=True))
+        top_row.addWidget(self.fetch_refresh_btn)
         layout.addLayout(top_row)
 
         # --- Search filter + sort ---
@@ -211,24 +219,40 @@ class GitStatusPanel(QWidget):
             else:
                 card.update_status(RepoStatus(path=repo.path, label=repo.label))
             card.launch_requested.connect(self._launch_single)
+            card.launch_auto_requested.connect(self._launch_single_auto)
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
 
-    def scan_all(self):
+    def scan_all(self, fetch: bool = False):
         self.refresh_btn.setEnabled(False)
+        self.fetch_refresh_btn.setEnabled(False)
+        # Pick up new folders added to github_dir since last load
+        before = len(self.settings.repos)
+        self.settings.discover_repos()
+        added = len(self.settings.repos) - before
+        if added:
+            self.settings.save()
+            self._refresh_tag_bar()
+            self.log.log_info(f"Discovered {added} new repo(s)")
         self._scan_count = 0
         self._scan_total = len(self.settings.repos)
-        self.scan_label.setText(f"Scanning 0/{self._scan_total}...")
+        prefix = "Fetching" if fetch else "Scanning"
+        self.scan_label.setText(f"{prefix} 0/{self._scan_total}...")
+        self._scan_prefix = prefix
         self._build_cards()
         repos = list(self.settings.repos)
-        self._scanner = RepoScannerThread(repos, parent=self)
+        # Network-bound fetch parallelizes well; local-only scan needs fewer workers
+        workers = 16 if fetch else 8
+        self._scanner = RepoScannerThread(repos, fetch=fetch, max_workers=workers, parent=self)
         self._scanner.status_updated.connect(self._on_status_updated)
         self._scanner.scan_complete.connect(self._on_scan_complete)
         self._scanner.start()
 
     def _on_status_updated(self, status: RepoStatus):
         self._scan_count += 1
-        self.scan_label.setText(f"Scanning {self._scan_count}/{self._scan_total}...")
+        self.scan_label.setText(
+            f"{self._scan_prefix} {self._scan_count}/{self._scan_total}..."
+        )
         self._statuses[status.path] = status
         if status.path in self.cards:
             self.cards[status.path].update_status(status)
@@ -236,6 +260,7 @@ class GitStatusPanel(QWidget):
     def _on_scan_complete(self):
         self.scan_label.setText("")
         self.refresh_btn.setEnabled(True)
+        self.fetch_refresh_btn.setEnabled(True)
         self._scanner = None
         self._reorder_cards()
 
@@ -381,6 +406,7 @@ class GitStatusPanel(QWidget):
         self.github_btn.setEnabled(enabled)
         self.clone_btn.setEnabled(enabled)
         self.refresh_btn.setEnabled(enabled)
+        self.fetch_refresh_btn.setEnabled(enabled)
         self.cancel_btn.setVisible(not enabled)
 
     def _start_operation(self, operation: str, repos, message: str = ""):
@@ -561,6 +587,13 @@ class GitStatusPanel(QWidget):
 
     def _launch_single(self, repo_path: str):
         """Launch a single Claude instance scoped to the given repo."""
+        self._launch_repo(repo_path, auto=False)
+
+    def _launch_single_auto(self, repo_path: str):
+        """Launch with --dangerously-skip-permissions for unattended use."""
+        self._launch_repo(repo_path, auto=True)
+
+    def _launch_repo(self, repo_path: str, auto: bool):
         repo = next((r for r in self.settings.repos if r.path == repo_path), None)
         if not repo:
             self.log.log_err(f"Repo not found: {repo_path}")
@@ -575,7 +608,8 @@ class GitStatusPanel(QWidget):
             "project directory. Do not create or modify files outside of it."
         )
         escaped = guardrail.replace('"', '\\"')
-        claude_cmd = f'claude "{escaped}"'
+        flags = " --dangerously-skip-permissions" if auto else ""
+        claude_cmd = f'claude{flags} "{escaped}"'
 
         cmd = [
             "wt.exe", "--window", "new",
@@ -585,6 +619,7 @@ class GitStatusPanel(QWidget):
         ]
         try:
             subprocess.Popen(cmd)
-            self.log.log_ok(f"Launched Claude in {repo.label}")
+            mode = "Auto" if auto else "standard"
+            self.log.log_ok(f"Launched Claude ({mode}) in {repo.label}")
         except Exception as e:
             self.log.log_err(f"Failed to launch: {e}")
