@@ -80,8 +80,12 @@ class GitStatusPanel(QWidget):
         self.sort_combo = QComboBox()
         self.sort_combo.addItem("Name", "name")
         self.sort_combo.addItem("Recently Modified", "date")
-        self.sort_combo.setFixedWidth(150)
-        self.sort_combo.setToolTip("Sort repos by name or last commit date")
+        self.sort_combo.addItem("Status (urgent first)", "status")
+        self.sort_combo.setFixedWidth(170)
+        self.sort_combo.setToolTip(
+            "Sort repos by name, last commit date, or status urgency "
+            "(diverged → behind → modified → ahead → untracked → clean)"
+        )
         # Restore saved sort preference
         saved_idx = self.sort_combo.findData(self.settings.repo_sort)
         if saved_idx >= 0:
@@ -396,6 +400,9 @@ class GitStatusPanel(QWidget):
                 else "",
                 reverse=True,
             )
+        elif sort_key == "status":
+            # Sort by urgency: lower rank = more serious, alphabetical tiebreaker.
+            paths.sort(key=self._seriousness)
         else:
             # Sort alphabetically by label
             paths.sort(
@@ -406,6 +413,27 @@ class GitStatusPanel(QWidget):
             card = self.cards[path]
             self.cards_layout.removeWidget(card)
             self.cards_layout.insertWidget(i, card)
+
+    def _seriousness(self, path: str) -> tuple[int, str]:
+        """Lower rank = more serious. Used by Status sort."""
+        s = self._statuses.get(path)
+        label = (s.label if s and s.label else path).lower()
+        # No scan data or errored repo: treat as inactionable — bottom of list.
+        if s is None or s.error:
+            return (6, label)
+        if s.diverged:
+            return (0, label)
+        if s.behind > 0 and s.modified_count > 0:
+            return (1, label)
+        if s.behind > 0:
+            return (2, label)
+        if s.modified_count > 0:
+            return (3, label)
+        if s.ahead > 0:
+            return (4, label)
+        if s.untracked_count > 0:
+            return (5, label)
+        return (6, label)
 
     def _select_dirty(self):
         """Highlight dirty repos by scrolling log — future: multi-select cards."""
