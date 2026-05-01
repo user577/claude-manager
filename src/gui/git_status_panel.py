@@ -5,15 +5,33 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QScrollArea, QFrame, QProgressBar, QComboBox,
+    QScrollArea, QFrame, QProgressBar, QComboBox, QMessageBox,
 )
 
 from src.config.settings import Settings, RepoInfo
 from src.core.repo_scanner import RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo
 from src.core.git_operations import GitWorker, CloneWorker
+from src.core.process_launcher import LaunchWorker
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
 from src.gui.commit_confirm_dialog import CommitConfirmDialog
+
+
+AUTO_COMMIT_PROMPT = (
+    "You are an autonomous git committer. Review all uncommitted changes in "
+    "this repository and create well-formed commits, then exit. Procedure: "
+    "(1) Run `git status` and `git diff HEAD` to inspect every change. "
+    "(2) Group related changes into logical commits — one focused change per "
+    "commit. A single commit is fine if everything is one coherent change. "
+    "(3) For each group, stage only the relevant files with `git add <paths>` "
+    "(never `git add -A` or `git add .`), then commit with a concise message "
+    "in imperative mood (~70 char first line, why-focused if non-obvious). "
+    "(4) Do NOT push. Do NOT modify any code — only commit existing changes. "
+    "(5) Skip files that look sensitive (.env, credentials, keys, tokens) or "
+    "unintentional (build artifacts, logs, .DS_Store) — leave them unstaged "
+    "and note them. (6) When done, run `git status` to confirm, summarize "
+    "what you committed in one line, and exit."
+)
 
 
 class GitStatusPanel(QWidget):
@@ -135,6 +153,21 @@ class GitStatusPanel(QWidget):
         self.commit_btn.setEnabled(False)
         self.commit_btn.clicked.connect(self._on_commit)
         commit_row.addWidget(self.commit_btn)
+
+        self.auto_commit_btn = QPushButton("Auto Commit")
+        self.auto_commit_btn.setToolTip(
+            "Spawn a Sonnet instance per dirty repo to review changes and "
+            "create commits autonomously (uses --dangerously-skip-permissions, "
+            "does not push)"
+        )
+        self.auto_commit_btn.setStyleSheet(
+            "QPushButton { background: #6e40c9; color: #ffffff; border: none; "
+            "border-radius: 4px; padding: 6px 12px; font-weight: bold; }"
+            "QPushButton:hover { background: #8b5cf6; }"
+            "QPushButton:disabled { background: #3c3c3c; color: #6e6e6e; }"
+        )
+        self.auto_commit_btn.clicked.connect(self._on_auto_commit)
+        commit_row.addWidget(self.auto_commit_btn)
         layout.addLayout(commit_row)
 
         # --- Push / Sync row ---
@@ -401,6 +434,7 @@ class GitStatusPanel(QWidget):
 
     def _set_buttons_enabled(self, enabled: bool):
         self.commit_btn.setEnabled(enabled and bool(self.commit_msg.text().strip()))
+        self.auto_commit_btn.setEnabled(enabled)
         self.push_btn.setEnabled(enabled)
         self.sync_btn.setEnabled(enabled)
         self.github_btn.setEnabled(enabled)
@@ -500,9 +534,39 @@ class GitStatusPanel(QWidget):
         self._start_operation("push", pushable)
 
     def _on_sync(self):
-        all_repos = [r for r in self.settings.repos if r.exists()]
-        self.log.log_info(f"Fetching & pulling {len(all_repos)} repos...")
-        self._start_operation("fetch_pull", all_repos)
+        # Only repos with something to pull — skip clean repos that are already in sync.
+        # Repos without scan data fall through (might genuinely be behind).
+        pullable = []
+        skipped_synced = 0
+        skipped_diverged = []
+        for r in self.settings.repos:
+            if not r.exists():
+                continue
+            s = self._statuses.get(r.path)
+            if s is None:
+                pullable.append(r)
+                continue
+            if s.diverged:
+                skipped_diverged.append(r.label)
+                continue
+            if s.behind > 0:
+                pullable.append(r)
+            else:
+                skipped_synced += 1
+
+        if skipped_diverged:
+            self.log.log_info(
+                f"Skipping diverged ({len(skipped_diverged)}): "
+                f"{', '.join(skipped_diverged)}"
+            )
+        if skipped_synced:
+            self.log.log_info(f"Skipping {skipped_synced} already-synced repo(s)")
+        if not pullable:
+            self.log.log_info("Nothing to fetch & pull")
+            return
+
+        self.log.log_info(f"Fetching & pulling {len(pullable)} repo(s)...")
+        self._start_operation("fetch_pull", pullable)
 
     def _on_check_github(self):
         """Query GitHub for repos not cloned locally."""
@@ -623,3 +687,56 @@ class GitStatusPanel(QWidget):
             self.log.log_ok(f"Launched Claude ({mode}) in {repo.label}")
         except Exception as e:
             self.log.log_err(f"Failed to launch: {e}")
+
+    def _on_auto_commit(self):
+        dirty = [r for r in self.settings.repos
+                 if r.path in self._statuses and self._statuses[r.path].dirty]
+        if not dirty:
+            self.log.log_info("All repos are clean, nothing to auto-commit")
+            return
+
+        names = "\n".join(f"  • {r.label}" for r in dirty)
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Auto Commit")
+        confirm.setIcon(QMessageBox.Question)
+        confirm.setText(
+            f"Spawn {len(dirty)} Sonnet instance(s) to auto-commit dirty repos?"
+        )
+        confirm.setInformativeText(
+            f"Each window runs Claude with --dangerously-skip-permissions and "
+            f"is told to review changes and create commits (no push).\n\n{names}"
+        )
+        confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        confirm.setDefaultButton(QMessageBox.Cancel)
+        if confirm.exec() != QMessageBox.Yes:
+            self.log.log_info("Auto commit cancelled")
+            return
+
+        # Pick a layout that fits the count
+        count = len(dirty)
+        if count <= 4:
+            layout_key = "grid_2x2"
+        elif count <= 8:
+            layout_key = "vertical"
+        else:
+            layout_key = "single"
+
+        self.log.log_info(f"Auto-committing {count} repo(s) via Sonnet...")
+        self._auto_commit_worker = LaunchWorker(
+            repos=dirty,
+            layout=layout_key,
+            count=count,
+            permission_mode="bypassPermissions",
+            model="sonnet",
+            backend="cloud",
+            initial_prompt=AUTO_COMMIT_PROMPT,
+            use_worktree=False,
+            session_mode="new",
+            parent=self,
+        )
+        self._auto_commit_worker.status.connect(self.log.log_info)
+        self._auto_commit_worker.finished_ok.connect(
+            lambda: self.log.log_ok("Auto commit instances launched")
+        )
+        self._auto_commit_worker.finished_err.connect(self.log.log_err)
+        self._auto_commit_worker.start()
