@@ -16,7 +16,13 @@ def _register_qt_dll_dirs():
     ICU v72 stub (missing Qt's v73 procedures) instead of PySide6's bundled
     ICU v73. Registering _internal/PySide6/ adds it to the search set, which
     is checked before System32.
+
+    Also forces Qt to use software OpenGL rendering so this app never exhausts
+    VRAM on machines with low or shared GPU memory.
     """
+    # Must be set before any Qt DLL is loaded; software renderer uses CPU only.
+    os.environ.setdefault("QT_OPENGL", "software")
+
     if not hasattr(sys, '_MEIPASS'):
         return
     pyside6_dir = os.path.join(sys._MEIPASS, 'PySide6')

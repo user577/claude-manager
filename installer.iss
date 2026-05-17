@@ -24,7 +24,7 @@ CloseApplications=force
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
+Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: checkedonce
 
 [Files]
 Source: "dist\ClaudeManager\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
