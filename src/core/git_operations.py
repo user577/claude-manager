@@ -92,7 +92,7 @@ def clone_repo(clone_url: str, dest_path: str) -> tuple[bool, str]:
     try:
         r = subprocess.run(
             ["git", "clone", clone_url, dest_path],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=1800,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         output = (r.stdout + r.stderr).strip()
