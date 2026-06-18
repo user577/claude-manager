@@ -1,57 +1,82 @@
-from PySide6.QtCore import Qt
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QListWidget, QListWidgetItem, QFileDialog,
+    QLineEdit, QListWidget, QFileDialog, QMessageBox, QFrame,
 )
 
 from src.config.settings import Settings, RepoInfo
 
 
 class SettingsDialog(QDialog):
+    """Per-account folder mapping + repo/tag management for the active account.
+
+    Each GitHub account gets its own discrete folder. The repo list below the
+    folder rows is scoped to the currently active account.
+    """
+
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle("Settings")
-        self.setMinimumSize(450, 400)
+        self.setMinimumSize(520, 480)
 
         layout = QVBoxLayout(self)
 
-        # --- GitHub directory ---
-        dir_row = QHBoxLayout()
-        dir_row.addWidget(QLabel("GitHub directory:"))
-        self.dir_edit = QLineEdit(self.settings.github_dir)
-        dir_row.addWidget(self.dir_edit, 1)
-        browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(self._browse_dir)
-        dir_row.addWidget(browse_btn)
-        layout.addLayout(dir_row)
+        # --- Per-account folders -------------------------------------------
+        layout.addWidget(QLabel("Account folders (one folder per GitHub account):"))
+        self.folder_edits: dict[str, QLineEdit] = {}
+        if self.settings.accounts:
+            for acct in self.settings.accounts:
+                row = QHBoxLayout()
+                name = acct.username or "(default)"
+                lbl = QLabel(name)
+                lbl.setMinimumWidth(130)
+                lbl.setStyleSheet("font-weight: bold;")
+                row.addWidget(lbl)
+                edit = QLineEdit(acct.folder)
+                edit.setPlaceholderText("(no folder set)")
+                row.addWidget(edit, 1)
+                browse = QPushButton("Browse")
+                browse.clicked.connect(
+                    lambda _checked=False, u=acct.username: self._browse_account(u)
+                )
+                row.addWidget(browse)
+                self.folder_edits[acct.username] = edit
+                layout.addLayout(row)
+        else:
+            hint = QLabel("No GitHub accounts detected. Run `gh auth login` first.")
+            hint.setStyleSheet("color: #f4be47;")
+            layout.addWidget(hint)
 
-        # --- Repo list ---
-        layout.addWidget(QLabel("Registered Repositories:"))
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #474747;")
+        layout.addWidget(sep)
+
+        # --- Active-account repo list --------------------------------------
+        active = self.settings.active()
+        active_name = (active.username or "(default)") if active else "(none)"
+        layout.addWidget(QLabel(f"Repositories for {active_name}:"))
         self.repo_list = QListWidget()
-        for repo in self.settings.repos:
-            self.repo_list.addItem(f"{repo.label}  —  {repo.path}")
+        self._reload_repo_list()
         layout.addWidget(self.repo_list)
 
-        # --- Repo buttons ---
         btn_row = QHBoxLayout()
-
         add_btn = QPushButton("Add Folder...")
         add_btn.clicked.connect(self._add_folder)
         btn_row.addWidget(add_btn)
-
         remove_btn = QPushButton("Remove Selected")
         remove_btn.clicked.connect(self._remove_selected)
         btn_row.addWidget(remove_btn)
-
         discover_btn = QPushButton("Auto-Discover")
+        discover_btn.setToolTip("Scan this account's folder for git repos")
         discover_btn.clicked.connect(self._discover)
         btn_row.addWidget(discover_btn)
-
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        # --- Tag editor ---
+        # --- Tag editor -----------------------------------------------------
         tag_row = QHBoxLayout()
         tag_row.addWidget(QLabel("Tags:"))
         self.tag_edit = QLineEdit()
@@ -63,7 +88,7 @@ class SettingsDialog(QDialog):
         self.repo_list.currentRowChanged.connect(self._on_repo_selected)
         self.tag_edit.editingFinished.connect(self._on_tags_changed)
 
-        # --- OK / Cancel ---
+        # --- OK / Cancel ----------------------------------------------------
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
         ok_btn = QPushButton("OK")
@@ -74,63 +99,97 @@ class SettingsDialog(QDialog):
         bottom_row.addWidget(cancel_btn)
         layout.addLayout(bottom_row)
 
-    def _browse_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Select GitHub Directory", self.dir_edit.text())
+    # --- Folder rows --------------------------------------------------------
+
+    def _browse_account(self, username: str):
+        edit = self.folder_edits.get(username)
+        if edit is None:
+            return
+        start = edit.text() or str(Path.home())
+        name = username or "default"
+        d = QFileDialog.getExistingDirectory(self, f"Folder for {name}", start)
         if d:
-            self.dir_edit.setText(d)
+            edit.setText(d)
+            # If this is the active account, adopt the folder immediately so
+            # Auto-Discover and the repo list reflect the new choice.
+            active = self.settings.active()
+            if active is not None and active.username == username:
+                active.folder = d
 
-    def _add_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Git Repository", self.settings.github_dir)
-        if d:
-            from pathlib import Path
-            p = Path(d)
-            if (p / ".git").exists():
-                repo = RepoInfo(path=str(p), label=p.name)
-                self.settings.repos.append(repo)
-                self.repo_list.addItem(f"{repo.label}  —  {repo.path}")
-            else:
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "Not a Git Repo",
-                                    f"{d} does not contain a .git directory.")
+    def apply(self):
+        """Write folder edits back into their accounts. Called on OK."""
+        for username, edit in self.folder_edits.items():
+            for acct in self.settings.accounts:
+                if acct.username == username:
+                    acct.folder = edit.text().strip()
+                    break
 
-    def _remove_selected(self):
-        row = self.repo_list.currentRow()
-        if row >= 0:
-            self.repo_list.takeItem(row)
-            del self.settings.repos[row]
+    # --- Repo list (scoped to active account) -------------------------------
 
-    def _discover(self):
-        self.settings.github_dir = self.dir_edit.text()
-        old_count = len(self.settings.repos)
-        self.settings.discover_repos()
-        # Refresh list
+    def _reload_repo_list(self):
         self.repo_list.clear()
         for repo in self.settings.repos:
             self.repo_list.addItem(f"{repo.label}  —  {repo.path}")
-        added = len(self.settings.repos) - old_count
+
+    def _add_folder(self):
+        active = self.settings.active()
+        if active is None:
+            return
+        start = active.folder or str(Path.home())
+        d = QFileDialog.getExistingDirectory(self, "Select Git Repository", start)
+        if not d:
+            return
+        p = Path(d)
+        if (p / ".git").exists():
+            active.repos.append(RepoInfo(path=str(p), label=p.name))
+            self._reload_repo_list()
+        else:
+            QMessageBox.warning(
+                self, "Not a Git Repo",
+                f"{d} does not contain a .git directory.",
+            )
+
+    def _remove_selected(self):
+        row = self.repo_list.currentRow()
+        active = self.settings.active()
+        if active is not None and 0 <= row < len(active.repos):
+            del active.repos[row]
+            self.repo_list.takeItem(row)
+
+    def _discover(self):
+        active = self.settings.active()
+        if active is None:
+            return
+        # Adopt the (possibly just-edited) folder before scanning.
+        edit = self.folder_edits.get(active.username)
+        if edit is not None:
+            active.folder = edit.text().strip()
+        old = len(active.repos)
+        active.discover_repos()
+        self._reload_repo_list()
+        added = len(active.repos) - old
         if added > 0:
             self.setWindowTitle(f"Settings — discovered {added} new repos")
+        elif not active.folder:
+            self.setWindowTitle("Settings — set a folder first")
 
     def _on_repo_selected(self, row: int):
-        if row < 0 or row >= len(self.settings.repos):
+        repos = self.settings.repos
+        if row < 0 or row >= len(repos):
             self.tag_edit.clear()
             self.tag_edit.setEnabled(False)
             return
         self.tag_edit.setEnabled(True)
-        repo = self.settings.repos[row]
-        self.tag_edit.setText(", ".join(repo.tags))
+        self.tag_edit.setText(", ".join(repos[row].tags))
 
     def _on_tags_changed(self):
         row = self.repo_list.currentRow()
-        if row < 0 or row >= len(self.settings.repos):
+        repos = self.settings.repos
+        if row < 0 or row >= len(repos):
             return
         raw = self.tag_edit.text()
         tags = sorted(set(
             t.strip().lower() for t in raw.split(",") if t.strip()
         ))
-        self.settings.repos[row].tags = tags
-        # Normalize display
+        repos[row].tags = tags
         self.tag_edit.setText(", ".join(tags))
-
-    def get_github_dir(self) -> str:
-        return self.dir_edit.text()

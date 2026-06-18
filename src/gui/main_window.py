@@ -63,6 +63,15 @@ class MainWindow(QMainWindow):
         stretch.setStyleSheet("background: transparent;")
         toolbar.addWidget(stretch)
 
+        # GitHub account switcher (gh CLI)
+        from PySide6.QtWidgets import QComboBox
+        self.account_combo = QComboBox()
+        self.account_combo.setToolTip("Switch the active GitHub account (gh auth switch)")
+        self.account_combo.setMinimumWidth(130)
+        self.account_combo.currentIndexChanged.connect(self._on_account_changed)
+        toolbar.addWidget(self.account_combo)
+        QTimer.singleShot(100, self._populate_accounts)
+
         # Ollama status dot
         self.ollama_dot = QLabel("\u25CF")
         self.ollama_dot.setFixedWidth(28)
@@ -139,6 +148,81 @@ class MainWindow(QMainWindow):
             self.pin_btn.setText("Pin")
         self.show()
 
+    def _populate_accounts(self):
+        """Reconcile gh accounts with settings and fill the toolbar dropdown.
+
+        Each account maps to its own folder; the active one drives which repos
+        the Git and Launch tabs show. Selecting an item is handled separately
+        in _on_account_changed (signals are blocked here so it doesn't fire).
+        """
+        from src.core.github_accounts import list_accounts
+        usernames, active = list_accounts()
+        prev_active = self.settings.active_account
+        if self.settings.sync_accounts(usernames, active):
+            self.settings.save()
+
+        self.account_combo.blockSignals(True)
+        self.account_combo.clear()
+        if not self.settings.accounts:
+            self.account_combo.addItem("(no gh account)")
+            self.account_combo.setEnabled(False)
+        else:
+            self.account_combo.setEnabled(True)
+            for acct in self.settings.accounts:
+                label = acct.username or "(default)"
+                if not acct.folder:
+                    label += "  ⚠ no folder"
+                self.account_combo.addItem(label, acct.username)
+            idx = self.account_combo.findData(self.settings.active_account)
+            if idx >= 0:
+                self.account_combo.setCurrentIndex(idx)
+        self.account_combo.blockSignals(False)
+
+        # If reconciliation moved the active account (e.g. gh switched outside
+        # the app, or a fresh login changed the active identity), rebuild the
+        # views so they reflect the now-active account's folder.
+        if self.settings.active_account != prev_active:
+            self._apply_active_account()
+
+    def _apply_active_account(self):
+        """Rebuild the Launch/Git views for the current active account."""
+        acct = self.settings.active()
+        if acct is not None and not acct.folder:
+            self.git_panel.log.log_info(
+                f"No folder set for {acct.username or 'this account'} — "
+                "open Settings to choose one."
+            )
+        self.launcher_panel.refresh_repos()
+        self.git_panel._build_cards()
+        self._git_scanned = False
+        if self.tabs.currentIndex() == 1:
+            self.git_panel.scan_all()
+            self._git_scanned = True
+
+    def _on_account_changed(self, index: int):
+        """Switch the active account: swap folder/repos and the gh identity."""
+        username = self.account_combo.itemData(index)
+        if username is None or username == self.settings.active_account:
+            return
+
+        # Keep the gh CLI identity in sync with the selected account.
+        if username:
+            from src.core.github_accounts import switch_account
+            ok, msg = switch_account(username)
+            if ok:
+                self.git_panel.log.log_ok(f"Switched GitHub account to {username}")
+            else:
+                QMessageBox.warning(
+                    self, "Account Switch Failed",
+                    f"Could not switch gh to {username}:\n{msg}\n\n"
+                    "Showing this account's folder anyway.",
+                )
+
+        # Swap the visible workspace to this account's folder.
+        self.settings.active_account = username
+        self.settings.save()
+        self._apply_active_account()
+
     def _check_ollama(self):
         """Kick off a background health check (non-blocking)."""
         if self._ollama_health_worker is not None and self._ollama_health_worker.isRunning():
@@ -207,11 +291,12 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
-            self.settings.github_dir = dlg.get_github_dir()
+            dlg.apply()
             self.settings.save()
             self.launcher_panel.refresh_repos()
             self.git_panel._build_cards()
             self._git_scanned = False
+            self._populate_accounts()  # clear any "no folder" warnings
 
     def _refresh_git(self):
         self.tabs.setCurrentIndex(1)
@@ -219,9 +304,11 @@ class MainWindow(QMainWindow):
         self._git_scanned = True
 
     def _on_tab_changed(self, index: int):
-        if index == 1 and not self._git_scanned:
-            self.git_panel.scan_all()
-            self._git_scanned = True
+        if index == 1:
+            self._populate_accounts()
+            if not self._git_scanned:
+                self.git_panel.scan_all()
+                self._git_scanned = True
 
     def closeEvent(self, event):
         # Save geometry and settings

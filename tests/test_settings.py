@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from src.config.settings import Settings, RepoInfo
+from src.config.settings import Settings, RepoInfo, GitHubAccount, LEGACY_USERNAME
 
 
 def test_repo_info_exists(tmp_path):
@@ -32,13 +32,17 @@ def test_settings_save_load(tmp_path):
         assert data["layout"] == "vertical"
         assert data["instance_count"] == 2
         assert data["permission_mode"] == "auto"
-        assert len(data["repos"]) == 1
+        # New format: repos live under the (single, legacy) account.
+        assert len(data["accounts"]) == 1
+        assert data["accounts"][0]["folder"] == "/bar"
+        assert len(data["accounts"][0]["repos"]) == 1
 
         s2 = Settings.load()
         assert s2.layout == "vertical"
         assert s2.instance_count == 2
         assert s2.permission_mode == "auto"
         assert s2.repos[0].label == "foo"
+        assert s2.github_dir == "/bar"
 
 
 def test_settings_load_missing_file(tmp_path):
@@ -110,3 +114,66 @@ def test_get_enabled_repos(tmp_path):
     enabled = s.get_enabled_repos()
     assert len(enabled) == 1
     assert enabled[0].label == "a"
+
+
+def test_load_migrates_legacy_format(tmp_path):
+    """An old config (top-level github_dir + repos) loads into one account."""
+    config_file = tmp_path / "settings.json"
+    config_file.write_text(json.dumps({
+        "layout": "grid_2x2",
+        "github_dir": "/legacy/path",
+        "repos": [{"path": "/legacy/path/r1", "label": "r1", "tags": ["x"]}],
+    }), encoding="utf-8")
+    with patch("src.config.settings.CONFIG_FILE", config_file), \
+         patch("src.config.settings.CONFIG_DIR", tmp_path):
+        s = Settings.load()
+        assert len(s.accounts) == 1
+        assert s.accounts[0].username == LEGACY_USERNAME
+        assert s.github_dir == "/legacy/path"
+        assert s.repos[0].label == "r1"
+        assert s.repos[0].tags == ["x"]
+
+
+def test_sync_accounts_adopts_legacy_into_active():
+    """The legacy bucket is renamed to the active gh account, keeping repos."""
+    s = Settings(github_dir="/work", repos=[RepoInfo(path="/work/a", label="a")])
+    changed = s.sync_accounts(["user577"], "user577")
+    assert changed
+    assert [a.username for a in s.accounts] == ["user577"]
+    assert s.active_account == "user577"
+    assert s.repos[0].label == "a"  # folder + repos preserved
+
+
+def test_sync_accounts_adds_new_accounts():
+    s = Settings(github_dir="/work")
+    s.sync_accounts(["user577"], "user577")  # adopt legacy -> user577
+    changed = s.sync_accounts(["user577", "acct2"], "user577")
+    assert changed
+    names = {a.username for a in s.accounts}
+    assert names == {"user577", "acct2"}
+    # New account starts with no folder.
+    acct2 = next(a for a in s.accounts if a.username == "acct2")
+    assert acct2.folder == ""
+
+
+def test_sync_accounts_tracks_active_switch():
+    s = Settings(github_dir="/work")
+    s.sync_accounts(["user577", "acct2"], "user577")
+    assert s.active_account == "user577"
+    # gh active changed (e.g. user ran gh auth switch elsewhere)
+    s.sync_accounts(["user577", "acct2"], "acct2")
+    assert s.active_account == "acct2"
+
+
+def test_per_account_repos_are_isolated():
+    s = Settings(accounts=[
+        GitHubAccount(username="user577", folder="/a",
+                      repos=[RepoInfo(path="/a/x", label="x")]),
+        GitHubAccount(username="acct2", folder="/b",
+                      repos=[RepoInfo(path="/b/y", label="y")]),
+    ], active_account="user577")
+    assert [r.label for r in s.repos] == ["x"]
+    assert s.github_dir == "/a"
+    s.active_account = "acct2"
+    assert [r.label for r in s.repos] == ["y"]
+    assert s.github_dir == "/b"
