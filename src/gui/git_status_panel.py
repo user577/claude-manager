@@ -243,13 +243,18 @@ class GitStatusPanel(QWidget):
         self._build_cards()
 
     def _build_cards(self):
-        # Clear old cards
+        # Clear old cards. deleteLater() (not setParent(None)) so they're
+        # destroyed instead of lingering as orphaned top-level widgets — an
+        # orphaned card can briefly flash as its own "Claude Manager" window.
         for card in self.cards.values():
-            card.setParent(None)
+            card.hide()
+            card.deleteLater()
         self.cards.clear()
 
         for repo in self.settings.repos:
-            card = RepoStatusCard()
+            # Parent to the container up front so the card is never a top-level
+            # window, even for the moment before it's added to the layout.
+            card = RepoStatusCard(self.cards_container)
             if not repo.exists():
                 card.update_status(RepoStatus(
                     path=repo.path, label=repo.label, error="Path not found"))
