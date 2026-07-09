@@ -51,9 +51,22 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._make_toolbar_label())
 
         spacer = QWidget()
-        spacer.setFixedWidth(1)
+        spacer.setFixedWidth(12)
         spacer.setStyleSheet("background: transparent;")
         toolbar.addWidget(spacer)
+
+        # Live usage meters (5-hour + 7-day limit windows)
+        from src.gui.widgets.usage_meter import UsageMeters
+        self.usage_meters = UsageMeters()
+        self.usage_meters.setCursor(Qt.PointingHandCursor)
+        self.usage_meters.mousePressEvent = lambda _: self._check_usage()
+        toolbar.addWidget(self.usage_meters)
+
+        self._usage_worker = None
+        self._usage_timer = QTimer(self)
+        self._usage_timer.timeout.connect(self._check_usage)
+        self._usage_timer.start(120_000)  # refresh every 2 min
+        QTimer.singleShot(800, self._check_usage)
 
         # Stretch to push buttons right
         stretch = QWidget()
@@ -222,6 +235,15 @@ class MainWindow(QMainWindow):
         self.settings.active_account = username
         self.settings.save()
         self._apply_active_account()
+
+    def _check_usage(self):
+        """Fetch live usage limits off the UI thread (non-blocking)."""
+        from src.core.usage_tracker import UsageWorker
+        if self._usage_worker is not None and self._usage_worker.isRunning():
+            return  # previous fetch still in progress
+        self._usage_worker = UsageWorker(self)
+        self._usage_worker.result.connect(self.usage_meters.update_data)
+        self._usage_worker.start()
 
     def _check_ollama(self):
         """Kick off a background health check (non-blocking)."""
