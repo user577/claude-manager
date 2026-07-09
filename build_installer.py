@@ -3,7 +3,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-import os
 
 ROOT = Path(__file__).parent
 VERSION = "1.0.0"
@@ -34,39 +33,6 @@ def clean_build():
         if p.exists():
             shutil.rmtree(p)
             print(f"  Removed {d}/")
-
-
-def bundle_icu_dlls():
-    """Copy icuuc.dll + icudt*.dll into the exe root so they are always found
-    via LOAD_LIBRARY_SEARCH_APPLICATION_DIR, even when Miniconda is absent
-    from the shortcut's PATH."""
-    exe_root = ROOT / "dist" / "ClaudeManager"
-    if not exe_root.exists():
-        print("  dist/ClaudeManager not found, skipping ICU bundle")
-        return
-
-    # Search PATH directories and common conda locations for icuuc.dll
-    search_dirs = []
-    for p in os.environ.get("PATH", "").split(os.pathsep):
-        if p:
-            search_dirs.append(Path(p))
-
-    icu_src = None
-    for d in search_dirs:
-        candidate = d / "icuuc.dll"
-        if candidate.exists():
-            icu_src = d
-            break
-
-    if icu_src is None:
-        print("  icuuc.dll not found on PATH – ICU DLLs not bundled")
-        return
-
-    print(f"=== Bundling ICU DLLs from {icu_src} ===")
-    for dll in icu_src.glob("icu*.dll"):
-        dest = exe_root / dll.name
-        shutil.copy2(dll, dest)
-        print(f"  Copied {dll.name}")
 
 
 def build_pyinstaller():
@@ -115,7 +81,6 @@ def main():
     clean_pyc()
     clean_build()
     build_pyinstaller()
-    bundle_icu_dlls()
     if not args.skip_inno:
         build_inno()
 

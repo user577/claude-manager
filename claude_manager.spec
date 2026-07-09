@@ -17,6 +17,14 @@ def _discover_src_modules():
     return modules
 
 
+def _without_icu_binaries(toc):
+    """Use Windows' ICU DLLs instead of bundling incompatible conda builds."""
+    return [
+        entry for entry in toc
+        if not Path(entry[0]).name.lower().startswith("icu")
+    ]
+
+
 block_cipher = None
 
 a = Analysis(
@@ -38,6 +46,7 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+a.binaries = _without_icu_binaries(a.binaries)
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
