@@ -34,6 +34,16 @@ AUTO_COMMIT_PROMPT = (
 )
 
 
+WORKFLOW_PROMPT = (
+    "For substantial tasks, work as a sequential pipeline rather than fanning "
+    "out in parallel: use Sonnet 5 subagents for scoped low-level work and "
+    "research, keep synthesis, review, and architecture on Opus 4.8, and either "
+    "hand the final polish to a single Fable 5 pass or review it yourself. Keep "
+    "each subagent tightly scoped to one task with only the context it needs. "
+    "For small or quick tasks, skip the pipeline and do the work directly."
+)
+
+
 class GitStatusPanel(QWidget):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
@@ -262,6 +272,7 @@ class GitStatusPanel(QWidget):
                 card.update_status(RepoStatus(path=repo.path, label=repo.label))
             card.launch_requested.connect(self._launch_single)
             card.launch_auto_requested.connect(self._launch_single_auto)
+            card.launch_workflow_requested.connect(self._launch_single_workflow)
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
 
@@ -690,7 +701,11 @@ class GitStatusPanel(QWidget):
         """Launch with --dangerously-skip-permissions for unattended use."""
         self._launch_repo(repo_path, auto=True)
 
-    def _launch_repo(self, repo_path: str, auto: bool):
+    def _launch_single_workflow(self, repo_path: str):
+        """Auto launch with the extra-breadth orchestration workflow prompt."""
+        self._launch_repo(repo_path, auto=True, extra_prompt=WORKFLOW_PROMPT)
+
+    def _launch_repo(self, repo_path: str, auto: bool, extra_prompt: str = ""):
         repo = next((r for r in self.settings.repos if r.path == repo_path), None)
         if not repo:
             self.log.log_err(f"Repo not found: {repo_path}")
@@ -704,6 +719,8 @@ class GitStatusPanel(QWidget):
             "All new files, edits, and code generation MUST stay within this "
             "project directory. Do not create or modify files outside of it."
         )
+        if extra_prompt:
+            guardrail = f"{guardrail}\n\n{extra_prompt}"
         escaped = guardrail.replace('"', '\\"')
         flags = " --dangerously-skip-permissions" if auto else ""
         claude_cmd = f'claude{flags} "{escaped}"'
@@ -716,7 +733,12 @@ class GitStatusPanel(QWidget):
         ]
         try:
             subprocess.Popen(cmd)
-            mode = "Auto" if auto else "standard"
+            if extra_prompt:
+                mode = "Ext Workflow"
+            elif auto:
+                mode = "Auto"
+            else:
+                mode = "standard"
             self.log.log_ok(f"Launched Claude ({mode}) in {repo.label}")
         except Exception as e:
             self.log.log_err(f"Failed to launch: {e}")
