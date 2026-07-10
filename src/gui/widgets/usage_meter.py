@@ -3,7 +3,9 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QProgressBar
 
-from src.core.usage_tracker import UsageData, Window, humanize_reset
+from src.core.usage_tracker import (
+    UsageData, Window, humanize_reset, humanize_reset_short,
+)
 
 _SEVERITY_COLOR = {
     "normal": "#4ec963",    # green
@@ -35,6 +37,14 @@ class _Meter(QWidget):
         self.bar.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.bar)
 
+        # Remaining time until this window resets (e.g. "2h 15m").
+        self.reset_label = QLabel("")
+        self.reset_label.setMinimumWidth(46)
+        self.reset_label.setStyleSheet(
+            "color: #9e9e9e; font-size: 11px; background: transparent;"
+        )
+        layout.addWidget(self.reset_label)
+
         self._set_bar_color("#6e6e6e")
         self.set_unknown()
 
@@ -50,6 +60,8 @@ class _Meter(QWidget):
         self.bar.setValue(pct)
         self.bar.setFormat(f"{pct}%")
         self._set_bar_color(_SEVERITY_COLOR.get(win.severity, "#4ec963"))
+        short = humanize_reset_short(win.resets_at)
+        self.reset_label.setText(f"↻ {short}" if short else "")
         reset = humanize_reset(win.resets_at)
         remaining = max(0, 100 - win.percent)
         tip = f"{self._full_name}: {win.percent:.0f}% used ({remaining:.0f}% left)"
@@ -60,6 +72,7 @@ class _Meter(QWidget):
     def set_unknown(self, reason: str = "loading…"):
         self.bar.setValue(0)
         self.bar.setFormat("—")
+        self.reset_label.setText("")
         self._set_bar_color("#6e6e6e")
         self.setToolTip(f"{self._full_name}: {reason}")
 
