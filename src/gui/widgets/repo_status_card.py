@@ -28,7 +28,7 @@ class StatusDot(QWidget):
 class RepoStatusCard(QWidget):
     launch_requested = Signal(str)  # emits repo path
     launch_auto_requested = Signal(str)  # emits repo path — dangerously-skip-permissions
-    launch_workflow_requested = Signal(str)  # emits repo path — auto + orchestration workflow
+    agent_heavy_requested = Signal(str)  # emits repo path — auto-scaling subagent ladder
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,24 +89,25 @@ class RepoStatusCard(QWidget):
         )
         layout.addWidget(self.launch_auto_btn)
 
-        self.launch_workflow_btn = QPushButton("Ext Workflow")
-        self.launch_workflow_btn.setFixedWidth(96)
-        self.launch_workflow_btn.setCursor(Qt.PointingHandCursor)
-        self.launch_workflow_btn.setToolTip(
-            "Auto launch (--dangerously-skip-permissions) with an extra-breadth "
-            "orchestration workflow: Sonnet 5 subagents for low-level work and "
-            "research, Opus 4.8 for synthesis/review, Fable 5 or self-review for "
-            "final polish. Best for substantial tasks — overkill for quick edits."
+        self.agent_heavy_btn = QPushButton("Agent Heavy")
+        self.agent_heavy_btn.setFixedWidth(96)
+        self.agent_heavy_btn.setCursor(Qt.PointingHandCursor)
+        self.agent_heavy_btn.setToolTip(
+            "Auto launch (--dangerously-skip-permissions) with an enforced "
+            "Haiku->Sonnet->Opus subagent ladder (scout/runner/implementer/"
+            "deep-worker) loaded via --add-dir. The orchestrator sizes each task "
+            "and delegates to the cheapest tier that fits, escalating only when "
+            "needed. Best for substantial tasks — overkill for quick edits."
         )
-        self.launch_workflow_btn.setStyleSheet(
-            "QPushButton { background: #2d6a4f; color: #ffffff; border: none; "
+        self.agent_heavy_btn.setStyleSheet(
+            "QPushButton { background: #6e40c9; color: #ffffff; border: none; "
             "border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: bold; }"
-            "QPushButton:hover { background: #3a8563; }"
+            "QPushButton:hover { background: #8b5cf6; }"
         )
-        self.launch_workflow_btn.clicked.connect(
-            lambda: self.launch_workflow_requested.emit(self._repo_path)
+        self.agent_heavy_btn.clicked.connect(
+            lambda: self.agent_heavy_requested.emit(self._repo_path)
         )
-        layout.addWidget(self.launch_workflow_btn)
+        layout.addWidget(self.agent_heavy_btn)
 
     def update_status(self, status: RepoStatus):
         self._repo_path = status.path

@@ -12,6 +12,7 @@ from src.config.settings import Settings, RepoInfo
 from src.core.repo_scanner import RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo
 from src.core.git_operations import GitWorker, CloneWorker
 from src.core.process_launcher import LaunchWorker
+from src.core.agent_ladder import ensure_ladder, SIZING_POLICY
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
 from src.gui.commit_confirm_dialog import CommitConfirmDialog
@@ -31,16 +32,6 @@ AUTO_COMMIT_PROMPT = (
     "unintentional (build artifacts, logs, .DS_Store) — leave them unstaged "
     "and note them. (6) When done, run `git status` to confirm, summarize "
     "what you committed in one line, and exit."
-)
-
-
-WORKFLOW_PROMPT = (
-    "For substantial tasks, work as a sequential pipeline rather than fanning "
-    "out in parallel: use Sonnet 5 subagents for scoped low-level work and "
-    "research, keep synthesis, review, and architecture on Opus 4.8, and either "
-    "hand the final polish to a single Fable 5 pass or review it yourself. Keep "
-    "each subagent tightly scoped to one task with only the context it needs. "
-    "For small or quick tasks, skip the pipeline and do the work directly."
 )
 
 
@@ -272,7 +263,7 @@ class GitStatusPanel(QWidget):
                 card.update_status(RepoStatus(path=repo.path, label=repo.label))
             card.launch_requested.connect(self._launch_single)
             card.launch_auto_requested.connect(self._launch_single_auto)
-            card.launch_workflow_requested.connect(self._launch_single_workflow)
+            card.agent_heavy_requested.connect(self._launch_agent_heavy)
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
 
@@ -701,11 +692,57 @@ class GitStatusPanel(QWidget):
         """Launch with --dangerously-skip-permissions for unattended use."""
         self._launch_repo(repo_path, auto=True)
 
-    def _launch_single_workflow(self, repo_path: str):
-        """Auto launch with the extra-breadth orchestration workflow prompt."""
-        self._launch_repo(repo_path, auto=True, extra_prompt=WORKFLOW_PROMPT)
+    def _launch_agent_heavy(self, repo_path: str):
+        """Launch an auto-scaling multi-agent session against the repo.
 
-    def _launch_repo(self, repo_path: str, auto: bool, extra_prompt: str = ""):
+        Loads the Haiku->Sonnet->Opus subagent ladder via --add-dir (session-
+        scoped; nothing written to the repo) and primes the orchestrator with
+        the sizing policy so it delegates each task to the cheapest tier that
+        fits. The per-tier models are pinned in the ladder, so routing is
+        enforced rather than merely suggested in prose.
+        """
+        repo = next((r for r in self.settings.repos if r.path == repo_path), None)
+        if not repo:
+            self.log.log_err(f"Repo not found: {repo_path}")
+            return
+
+        try:
+            ladder_root = ensure_ladder()
+        except Exception as e:
+            self.log.log_err(f"Failed to prepare agent ladder: {e}")
+            return
+
+        uid = uuid.uuid4().hex[:8]
+        title = f"Claude-{repo.label}-agents-{uid}"
+
+        prompt = (
+            f"You are working in the project at {repo.path}. "
+            "All new files, edits, and code generation MUST stay within this "
+            "project directory. Do not create or modify files outside of it. "
+            + SIZING_POLICY
+        )
+        # Flatten to a single line — cmd.exe /k treats embedded newlines in the
+        # argument as command terminators, which would truncate the prompt.
+        prompt = " ".join(prompt.split())
+        escaped = prompt.replace('"', '\\"')
+        claude_cmd = (
+            f'claude --dangerously-skip-permissions '
+            f'--add-dir "{ladder_root}" "{escaped}"'
+        )
+
+        cmd = [
+            "wt.exe", "--window", "new",
+            "--title", title,
+            "-d", repo.path,
+            "cmd.exe", "/k", claude_cmd,
+        ]
+        try:
+            subprocess.Popen(cmd)
+            self.log.log_ok(f"Launched Claude (Agent Heavy) in {repo.label}")
+        except Exception as e:
+            self.log.log_err(f"Failed to launch: {e}")
+
+    def _launch_repo(self, repo_path: str, auto: bool):
         repo = next((r for r in self.settings.repos if r.path == repo_path), None)
         if not repo:
             self.log.log_err(f"Repo not found: {repo_path}")
@@ -719,8 +756,6 @@ class GitStatusPanel(QWidget):
             "All new files, edits, and code generation MUST stay within this "
             "project directory. Do not create or modify files outside of it."
         )
-        if extra_prompt:
-            guardrail = f"{guardrail}\n\n{extra_prompt}"
         escaped = guardrail.replace('"', '\\"')
         flags = " --dangerously-skip-permissions" if auto else ""
         claude_cmd = f'claude{flags} "{escaped}"'
@@ -733,12 +768,7 @@ class GitStatusPanel(QWidget):
         ]
         try:
             subprocess.Popen(cmd)
-            if extra_prompt:
-                mode = "Ext Workflow"
-            elif auto:
-                mode = "Auto"
-            else:
-                mode = "standard"
+            mode = "Auto" if auto else "standard"
             self.log.log_ok(f"Launched Claude ({mode}) in {repo.label}")
         except Exception as e:
             self.log.log_err(f"Failed to launch: {e}")
