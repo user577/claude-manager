@@ -131,23 +131,29 @@ def fetch_usage(timeout: float = 15.0) -> UsageData:
     return UsageData(ok=True, five_hour=five, seven_day=seven)
 
 
-def humanize_reset(resets_at: datetime | None) -> str:
-    """Return a short 'resets in 4h 12m' style string."""
+def humanize_reset_short(resets_at: datetime | None) -> str:
+    """Return just the remaining time — '4h 12m', '2d 3h', '45m', 'now', ''."""
     if resets_at is None:
         return ""
-    now = datetime.now(timezone.utc)
-    delta = resets_at - now
-    secs = int(delta.total_seconds())
+    secs = int((resets_at - datetime.now(timezone.utc)).total_seconds())
     if secs <= 0:
-        return "resets now"
+        return "now"
     days, rem = divmod(secs, 86400)
     hours, rem = divmod(rem, 3600)
     mins = rem // 60
     if days:
-        return f"resets in {days}d {hours}h"
+        return f"{days}d {hours}h"
     if hours:
-        return f"resets in {hours}h {mins}m"
-    return f"resets in {mins}m"
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def humanize_reset(resets_at: datetime | None) -> str:
+    """Return a short 'resets in 4h 12m' style string."""
+    short = humanize_reset_short(resets_at)
+    if not short:
+        return ""
+    return "resets now" if short == "now" else f"resets in {short}"
 
 
 class UsageWorker(QThread):
