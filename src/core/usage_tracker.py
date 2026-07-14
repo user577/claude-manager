@@ -117,7 +117,12 @@ def fetch_usage(timeout: float = 15.0) -> UsageData:
     scoped_name = ""
 
     # Prefer server-supplied severity from the richer `limits` array when present.
+    # Each entry is attacker/server-controlled shape we don't fully trust, so a
+    # single malformed item must not abort the whole parse — that would starve
+    # every meter (5h/7d included), not just the scoped one.
     for lim in payload.get("limits") or []:
+        if not isinstance(lim, dict):
+            continue
         grp = lim.get("group")
         kind = lim.get("kind")
         sev = lim.get("severity")
@@ -131,13 +136,19 @@ def fetch_usage(timeout: float = 15.0) -> UsageData:
             pct = lim.get("percent")
             if pct is None:
                 continue
+            try:
+                pct = float(pct)
+            except (TypeError, ValueError):
+                continue
+            scope = lim.get("scope")
+            model = scope.get("model") if isinstance(scope, dict) else None
             scoped = Window(
-                percent=float(pct),
+                percent=pct,
                 resets_at=_parse_ts(lim.get("resets_at")),
                 severity=sev or "normal",
             )
-            model = (lim.get("scope") or {}).get("model") or {}
-            scoped_name = model.get("display_name") or ""
+            if isinstance(model, dict):
+                scoped_name = model.get("display_name") or ""
 
     if five and five.severity == "normal":
         five.severity = _severity_for(five.percent)
@@ -185,4 +196,11 @@ class UsageWorker(QThread):
     result = Signal(object)  # UsageData
 
     def run(self):
-        self.result.emit(fetch_usage())
+        # fetch_usage() must never raise out of a QThread — an uncaught
+        # exception here kills the thread silently (no result emitted) and
+        # the meters are stuck showing "loading..." forever.
+        try:
+            data = fetch_usage()
+        except Exception as e:  # noqa: BLE001 - last-resort guard, see above
+            data = UsageData(ok=False, error=f"Internal error: {e}")
+        self.result.emit(data)
