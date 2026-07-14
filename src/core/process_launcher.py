@@ -14,6 +14,37 @@ from src.core.window_manager import (
 _ollama_model_cache: list[str] | None = None
 
 
+def stop_worker(thread, wait_ms: int = 3000) -> bool:
+    """Stop a background :class:`QThread` cleanly for shutdown.
+
+    Signals cancellation if the worker supports it, then waits up to
+    ``wait_ms`` for ``run()`` to return. Returns ``True`` if the thread
+    finished, ``False`` if it was still running when the timeout elapsed.
+
+    We deliberately do NOT call ``QThread.terminate()`` on a stuck thread:
+    these workers run pure-Python bodies (urllib / subprocess), and force-
+    killing one mid-execution corrupts the interpreter and aborts the process.
+    A thread stuck on a slow network/subprocess call is instead abandoned; it
+    holds no shared state and the process is exiting anyway. In practice these
+    calls return in well under a second, so the wait almost always succeeds.
+    """
+    if thread is None:
+        return True
+    try:
+        if not thread.isRunning():
+            return True
+    except RuntimeError:
+        # Underlying C++ object already deleted — nothing to do.
+        return True
+    if hasattr(thread, "cancel"):
+        try:
+            thread.cancel()
+        except Exception:
+            pass
+    thread.quit()  # no-op for run()-loop workers, harmless
+    return thread.wait(wait_ms)
+
+
 def get_ollama_models(force_refresh: bool = False) -> list[str]:
     """Query ollama for available models. Cached until force_refresh."""
     global _ollama_model_cache

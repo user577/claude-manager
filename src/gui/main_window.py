@@ -1,4 +1,6 @@
-from PySide6.QtCore import Qt, QSize, QTimer
+import time
+
+from PySide6.QtCore import Qt, QSize, QTimer, QEvent
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QToolBar, QPushButton, QWidget, QLabel,
@@ -18,6 +20,9 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: Settings):
         super().__init__()
         self.settings = settings
+        self._closing = False
+        self._polling_paused = False
+        self._last_usage_check = -1e9  # monotonic ts of last usage fetch start
 
         self.setWindowTitle(APP_DISPLAY_NAME)
         if ICON_PATH.exists():
@@ -65,12 +70,13 @@ class MainWindow(QMainWindow):
         self._usage_worker = None
         self._usage_timer = QTimer(self)
         self._usage_timer.timeout.connect(self._check_usage)
-        self._usage_timer.start(120_000)  # refresh every 2 min
+        self._usage_timer.start(600_000)  # network refresh every 10 min
+        # (the meter widget ticks its reset countdowns locally every 30s; the
+        # 5h/7d/weekly windows barely move, so polling harder just wastes calls)
         QTimer.singleShot(800, self._check_usage)
 
         # Stretch to push buttons right
         stretch = QWidget()
-        stretch.setSizePolicy(stretch.sizePolicy())
         from PySide6.QtWidgets import QSizePolicy
         stretch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         stretch.setStyleSheet("background: transparent;")
@@ -161,6 +167,43 @@ class MainWindow(QMainWindow):
             self.pin_btn.setText("Pin")
         self.show()
 
+    # ---- Polling lifecycle (pause while hidden/minimized) ----
+
+    def _pause_polling(self):
+        """Stop the periodic usage/ollama polls (window not visible)."""
+        if self._polling_paused:
+            return
+        self._polling_paused = True
+        self._usage_timer.stop()
+        self._ollama_timer.stop()
+
+    def _resume_polling(self):
+        """Restart polling and refresh once when the window comes back."""
+        if self._closing or not self._polling_paused:
+            return
+        self._polling_paused = False
+        self._usage_timer.start(600_000)
+        self._ollama_timer.start(30_000)
+        # Refresh immediately so the meters/status are current on return.
+        self._check_usage()
+        self._check_ollama()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowStateChange:
+            if self.isMinimized():
+                self._pause_polling()
+            else:
+                self._resume_polling()
+        super().changeEvent(event)
+
+    def hideEvent(self, event):
+        self._pause_polling()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        self._resume_polling()
+        super().showEvent(event)
+
     def _populate_accounts(self):
         """Reconcile gh accounts with settings and fill the toolbar dropdown.
 
@@ -236,17 +279,31 @@ class MainWindow(QMainWindow):
         self.settings.save()
         self._apply_active_account()
 
-    def _check_usage(self):
+    # Minimum spacing between usage fetches. The endpoint throttles under
+    # frequent polling (returns an empty payload), so manual clicks and
+    # minimize/restore refreshes are rate-limited to this. The 10-min periodic
+    # timer is always well past it.
+    _USAGE_MIN_INTERVAL = 30.0
+
+    def _check_usage(self, force: bool = False):
         """Fetch live usage limits off the UI thread (non-blocking)."""
+        if self._closing:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_usage_check < self._USAGE_MIN_INTERVAL:
+            return  # too soon since the last fetch — avoid throttling the API
         from src.core.usage_tracker import UsageWorker
         if self._usage_worker is not None and self._usage_worker.isRunning():
             return  # previous fetch still in progress
+        self._last_usage_check = now
         self._usage_worker = UsageWorker(self)
         self._usage_worker.result.connect(self.usage_meters.update_data)
         self._usage_worker.start()
 
     def _check_ollama(self):
         """Kick off a background health check (non-blocking)."""
+        if self._closing:
+            return
         if self._ollama_health_worker is not None and self._ollama_health_worker.isRunning():
             return  # previous check still in progress
         self._ollama_health_worker = OllamaHealthWorker(parent=self)
@@ -341,4 +398,18 @@ class MainWindow(QMainWindow):
         self.settings.window_height = geo.height()
         self.launcher_panel.save_state()
         self.settings.save()
+
+        # Stop background timers and wait on any in-flight worker threads so we
+        # don't exit with a "QThread destroyed while still running" crash.
+        # The flag stops any pending one-shot timer from starting a new worker
+        # after we've already torn the running ones down.
+        self._closing = True
+        self._usage_timer.stop()
+        self._ollama_timer.stop()
+        from src.core.process_launcher import stop_worker
+        stop_worker(self._usage_worker)
+        stop_worker(self._ollama_health_worker)
+        self.launcher_panel.stop_workers()
+        self.git_panel.stop_workers()
+
         super().closeEvent(event)

@@ -267,6 +267,13 @@ class GitStatusPanel(QWidget):
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
 
+    def stop_workers(self):
+        """Stop any running background threads for a clean shutdown."""
+        from src.core.process_launcher import stop_worker
+        for attr in ("_scanner", "_git_worker", "_gh_sync",
+                     "_clone_worker", "_auto_commit_worker"):
+            stop_worker(getattr(self, attr, None))
+
     def scan_all(self, fetch: bool = False):
         self.refresh_btn.setEnabled(False)
         self.fetch_refresh_btn.setEnabled(False)
