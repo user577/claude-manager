@@ -148,3 +148,66 @@ class UsageMeters(QWidget):
         if data.scoped_name:
             self.fable.set_caption(data.scoped_name)
         self.fable.set_window_or_keep(data.scoped)
+
+
+class CommitMeter(QWidget):
+    """Today's authored-commit count, green at/above the goal, red below."""
+
+    _GREEN = "#4ec963"
+    _RED = "#f44747"
+    _GREY = "#6e6e6e"
+
+    def __init__(self, goal: int = 35, parent=None):
+        super().__init__(parent)
+        self._goal = goal
+        self._count: int | None = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        cap = QLabel("Commits")
+        cap.setStyleSheet(
+            "color: #9e9e9e; font-size: 11px; font-weight: bold; background: transparent;"
+        )
+        layout.addWidget(cap)
+
+        self.value = QLabel("—")
+        self.value.setAlignment(Qt.AlignCenter)
+        self.value.setMinimumWidth(34)
+        layout.addWidget(self.value)
+
+        self._render()
+
+    def _color(self) -> str:
+        if self._count is None:
+            return self._GREY
+        return self._GREEN if self._count >= self._goal else self._RED
+
+    def _render(self):
+        text = "—" if self._count is None else str(self._count)
+        color = self._color()
+        self.value.setText(text)
+        self.value.setStyleSheet(
+            f"color: #ffffff; background: {color}; border-radius: 3px; "
+            "font-size: 12px; font-weight: bold; padding: 1px 6px;"
+        )
+        if self._count is None:
+            self.setToolTip("Commits today: loading…")
+        else:
+            self.setToolTip(
+                f"{self._count} commit(s) authored today (goal {self._goal})"
+                "\nClick to refresh"
+            )
+
+    def set_goal(self, goal: int):
+        self._goal = goal
+        self._render()
+
+    def set_count(self, count: int):
+        self._count = count
+        self._render()
+
+    def set_unknown(self):
+        self._count = None
+        self._render()

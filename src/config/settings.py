@@ -81,6 +81,7 @@ class Settings:
     use_worktree: bool
     session_mode: str
     repo_sort: str
+    commit_goal: int
     window_x: int
     window_y: int
     window_width: int
@@ -105,6 +106,7 @@ class Settings:
         use_worktree: bool = False,
         session_mode: str = "new",
         repo_sort: str = "name",
+        commit_goal: int = 35,
         window_x: int = 200,
         window_y: int = 200,
         window_width: int = 520,
@@ -136,6 +138,7 @@ class Settings:
         self.use_worktree = use_worktree
         self.session_mode = session_mode
         self.repo_sort = repo_sort
+        self.commit_goal = commit_goal
         self.window_x = window_x
         self.window_y = window_y
         self.window_width = window_width
@@ -206,6 +209,7 @@ class Settings:
                 use_worktree=data.get("use_worktree", False),
                 session_mode=data.get("session_mode", "new"),
                 repo_sort=data.get("repo_sort", "name"),
+                commit_goal=data.get("commit_goal", 35),
                 window_x=data.get("window_x", 200),
                 window_y=data.get("window_y", 200),
                 window_width=data.get("window_width", 520),
@@ -229,6 +233,7 @@ class Settings:
             "use_worktree": self.use_worktree,
             "session_mode": self.session_mode,
             "repo_sort": self.repo_sort,
+            "commit_goal": self.commit_goal,
             "window_x": self.window_x,
             "window_y": self.window_y,
             "window_width": self.window_width,
