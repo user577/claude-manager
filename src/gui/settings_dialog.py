@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QListWidget, QFileDialog, QMessageBox, QFrame,
+    QLineEdit, QListWidget, QFileDialog, QMessageBox, QFrame, QSpinBox,
 )
 
 from src.config.settings import Settings, RepoInfo
@@ -88,6 +88,19 @@ class SettingsDialog(QDialog):
         self.repo_list.currentRowChanged.connect(self._on_repo_selected)
         self.tag_edit.editingFinished.connect(self._on_tags_changed)
 
+        # --- Daily commit goal ---------------------------------------------
+        goal_row = QHBoxLayout()
+        goal_row.addWidget(QLabel("Daily commit goal:"))
+        self.goal_spin = QSpinBox()
+        self.goal_spin.setRange(1, 999)
+        self.goal_spin.setValue(self.settings.commit_goal)
+        self.goal_spin.setToolTip(
+            "Toolbar commit meter turns green at/above this count, red below."
+        )
+        goal_row.addWidget(self.goal_spin)
+        goal_row.addStretch()
+        layout.addLayout(goal_row)
+
         # --- OK / Cancel ----------------------------------------------------
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
@@ -123,6 +136,7 @@ class SettingsDialog(QDialog):
                 if acct.username == username:
                     acct.folder = edit.text().strip()
                     break
+        self.settings.commit_goal = self.goal_spin.value()
 
     # --- Repo list (scoped to active account) -------------------------------
 

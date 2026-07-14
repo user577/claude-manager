@@ -2,7 +2,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QScrollArea, QFrame, QProgressBar, QComboBox, QMessageBox,
@@ -36,6 +36,10 @@ AUTO_COMMIT_PROMPT = (
 
 
 class GitStatusPanel(QWidget):
+    # Emitted after a git operation finishes (commit/push/pull) so the toolbar
+    # commit meter can refresh without polling.
+    commits_changed = Signal()
+
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -519,6 +523,7 @@ class GitStatusPanel(QWidget):
         self._set_buttons_enabled(True)
         self.progress.hide()
         self._git_worker = None
+        self.commits_changed.emit()
         # Re-scan to update cards
         self.scan_all()
 

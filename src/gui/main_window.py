@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(spacer)
 
         # Live usage meters (5-hour + 7-day limit windows)
-        from src.gui.widgets.usage_meter import UsageMeters
+        from src.gui.widgets.usage_meter import UsageMeters, CommitMeter
         self.usage_meters = UsageMeters()
         self.usage_meters.setCursor(Qt.PointingHandCursor)
         self.usage_meters.mousePressEvent = lambda _: self._check_usage()
@@ -74,6 +74,19 @@ class MainWindow(QMainWindow):
         # (the meter widget ticks its reset countdowns locally every 30s; the
         # 5h/7d/weekly windows barely move, so polling harder just wastes calls)
         QTimer.singleShot(800, self._check_usage)
+
+        # Daily commit count (to the right of the Fable meter)
+        self.commit_meter = CommitMeter(settings.commit_goal)
+        self.commit_meter.setCursor(Qt.PointingHandCursor)
+        self.commit_meter.mousePressEvent = lambda _: self._check_commits(force=True)
+        toolbar.addWidget(self.commit_meter)
+
+        self._commit_worker = None
+        self._last_commit_check = -1e9
+        self._commit_timer = QTimer(self)
+        self._commit_timer.timeout.connect(self._check_commits)
+        self._commit_timer.start(300_000)  # recount every 5 min
+        QTimer.singleShot(1200, self._check_commits)
 
         # Stretch to push buttons right
         stretch = QWidget()
@@ -136,6 +149,10 @@ class MainWindow(QMainWindow):
 
         self.launcher_panel = LauncherPanel(settings)
         self.git_panel = GitStatusPanel(settings)
+        # Recount commits the moment one lands (no waiting for the poll).
+        self.git_panel.commits_changed.connect(
+            lambda: self._check_commits(force=True)
+        )
 
         self.tabs.addTab(self.launcher_panel, "Launch")
         self.tabs.addTab(self.git_panel, "Git")
@@ -176,6 +193,7 @@ class MainWindow(QMainWindow):
         self._polling_paused = True
         self._usage_timer.stop()
         self._ollama_timer.stop()
+        self._commit_timer.stop()
 
     def _resume_polling(self):
         """Restart polling and refresh once when the window comes back."""
@@ -184,9 +202,11 @@ class MainWindow(QMainWindow):
         self._polling_paused = False
         self._usage_timer.start(600_000)
         self._ollama_timer.start(30_000)
+        self._commit_timer.start(300_000)
         # Refresh immediately so the meters/status are current on return.
         self._check_usage()
         self._check_ollama()
+        self._check_commits()
 
     def changeEvent(self, event):
         if event.type() == QEvent.WindowStateChange:
@@ -300,6 +320,26 @@ class MainWindow(QMainWindow):
         self._usage_worker.result.connect(self.usage_meters.update_data)
         self._usage_worker.start()
 
+    # Light debounce so a burst of triggers (poll + commit signal + click)
+    # coalesces into one recount. Cheap local git calls, so this is small.
+    _COMMIT_MIN_INTERVAL = 3.0
+
+    def _check_commits(self, force: bool = False):
+        """Recount today's authored commits off the UI thread."""
+        if self._closing:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_commit_check < self._COMMIT_MIN_INTERVAL:
+            return
+        from src.core.commit_counter import CommitCountWorker
+        if self._commit_worker is not None and self._commit_worker.isRunning():
+            return  # previous count still in progress
+        self._last_commit_check = now
+        paths = [r.path for r in self.settings.get_enabled_repos()]
+        self._commit_worker = CommitCountWorker(paths, self)
+        self._commit_worker.result.connect(self.commit_meter.set_count)
+        self._commit_worker.start()
+
     def _check_ollama(self):
         """Kick off a background health check (non-blocking)."""
         if self._closing:
@@ -376,6 +416,9 @@ class MainWindow(QMainWindow):
             self.git_panel._build_cards()
             self._git_scanned = False
             self._populate_accounts()  # clear any "no folder" warnings
+            # Goal or repo set may have changed — re-evaluate the commit meter.
+            self.commit_meter.set_goal(self.settings.commit_goal)
+            self._check_commits(force=True)
 
     def _refresh_git(self):
         self.tabs.setCurrentIndex(1)
@@ -406,9 +449,11 @@ class MainWindow(QMainWindow):
         self._closing = True
         self._usage_timer.stop()
         self._ollama_timer.stop()
+        self._commit_timer.stop()
         from src.core.process_launcher import stop_worker
         stop_worker(self._usage_worker)
         stop_worker(self._ollama_health_worker)
+        stop_worker(self._commit_worker)
         self.launcher_panel.stop_workers()
         self.git_panel.stop_workers()
 
