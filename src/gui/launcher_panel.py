@@ -455,6 +455,12 @@ class LauncherPanel(QWidget):
         self.settings.use_worktree = self.worktree_check.isChecked()
         self.settings.session_mode = self._get_session_mode()
 
+    def stop_workers(self):
+        """Stop any running background threads for a clean shutdown."""
+        from src.core.process_launcher import stop_worker
+        for t in (self._worker, self._test_worker, self._pull_worker):
+            stop_worker(t)
+
     def _on_launch(self):
         self.save_state()
         enabled = self.settings.get_enabled_repos()

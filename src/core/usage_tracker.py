@@ -40,6 +40,8 @@ class UsageData:
     ok: bool
     five_hour: Window | None = None
     seven_day: Window | None = None
+    scoped: Window | None = None       # per-model weekly limit (e.g. Fable)
+    scoped_name: str = ""              # model display name for the scoped window
     error: str = ""
 
 
@@ -111,24 +113,45 @@ def fetch_usage(timeout: float = 15.0) -> UsageData:
 
     five = _window(payload.get("five_hour"))
     seven = _window(payload.get("seven_day"))
+    scoped: Window | None = None
+    scoped_name = ""
 
     # Prefer server-supplied severity from the richer `limits` array when present.
     for lim in payload.get("limits") or []:
         grp = lim.get("group")
+        kind = lim.get("kind")
         sev = lim.get("severity")
         if grp == "session" and five and sev:
             five.severity = sev
-        elif grp == "weekly" and lim.get("kind") == "weekly_all" and seven and sev:
+        elif grp == "weekly" and kind == "weekly_all" and seven and sev:
             seven.severity = sev
+        elif grp == "weekly" and kind == "weekly_scoped":
+            # Per-model weekly cap (e.g. Fable). Build directly from the limit
+            # entry since there is no matching top-level window block.
+            pct = lim.get("percent")
+            if pct is None:
+                continue
+            scoped = Window(
+                percent=float(pct),
+                resets_at=_parse_ts(lim.get("resets_at")),
+                severity=sev or "normal",
+            )
+            model = (lim.get("scope") or {}).get("model") or {}
+            scoped_name = model.get("display_name") or ""
 
     if five and five.severity == "normal":
         five.severity = _severity_for(five.percent)
     if seven and seven.severity == "normal":
         seven.severity = _severity_for(seven.percent)
+    if scoped and scoped.severity == "normal":
+        scoped.severity = _severity_for(scoped.percent)
 
-    if five is None and seven is None:
+    if five is None and seven is None and scoped is None:
         return UsageData(ok=False, error="No usage data")
-    return UsageData(ok=True, five_hour=five, seven_day=seven)
+    return UsageData(
+        ok=True, five_hour=five, seven_day=seven,
+        scoped=scoped, scoped_name=scoped_name,
+    )
 
 
 def humanize_reset_short(resets_at: datetime | None) -> str:
