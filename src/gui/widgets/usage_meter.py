@@ -154,8 +154,13 @@ class CommitMeter(QWidget):
     """Today's authored-commit count, green at/above the goal, red below."""
 
     _GREEN = "#4ec963"
+    _AMBER = "#d7a13b"
     _RED = "#f44747"
     _GREY = "#6e6e6e"
+
+    # At/above the goal is green; a respectable-but-short day is amber rather
+    # than a discouraging red. Below this it's red.
+    _AMBER_THRESHOLD = 20
 
     def __init__(self, goal: int = 35, parent=None):
         super().__init__(parent)
@@ -182,7 +187,11 @@ class CommitMeter(QWidget):
     def _color(self) -> str:
         if self._count is None:
             return self._GREY
-        return self._GREEN if self._count >= self._goal else self._RED
+        if self._count >= self._goal:
+            return self._GREEN
+        if self._count >= self._AMBER_THRESHOLD:
+            return self._AMBER
+        return self._RED
 
     def _render(self):
         text = "—" if self._count is None else str(self._count)
