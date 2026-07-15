@@ -196,8 +196,8 @@ class CommitMeter(QWidget):
             self.setToolTip("Commits today: loading…")
         else:
             self.setToolTip(
-                f"{self._count} commit(s) authored today (goal {self._goal})"
-                "\nClick to refresh"
+                f"{self._count} GitHub contribution(s) today (goal {self._goal})"
+                "\nMatches your contribution graph — click to refresh"
             )
 
     def set_goal(self, goal: int):
@@ -205,6 +205,10 @@ class CommitMeter(QWidget):
         self._render()
 
     def set_count(self, count: int):
+        # A negative sentinel means the fetch failed; keep the last good value
+        # rather than blanking or zeroing the meter.
+        if count < 0:
+            return
         self._count = count
         self._render()
 
