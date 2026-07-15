@@ -298,6 +298,9 @@ class MainWindow(QMainWindow):
         self.settings.active_account = username
         self.settings.save()
         self._apply_active_account()
+        # The commit meter tracks the active gh identity's contribution graph,
+        # so recount now that the identity changed.
+        self._check_commits(force=True)
 
     # Minimum spacing between usage fetches. The endpoint throttles under
     # frequent polling (returns an empty payload), so manual clicks and
@@ -335,8 +338,7 @@ class MainWindow(QMainWindow):
         if self._commit_worker is not None and self._commit_worker.isRunning():
             return  # previous count still in progress
         self._last_commit_check = now
-        paths = [r.path for r in self.settings.get_enabled_repos()]
-        self._commit_worker = CommitCountWorker(paths, self)
+        self._commit_worker = CommitCountWorker(self)
         self._commit_worker.result.connect(self.commit_meter.set_count)
         self._commit_worker.start()
 
