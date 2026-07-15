@@ -2,7 +2,14 @@
 
 Feeds the toolbar's daily commit meter. "Today" is local midnight; "the user"
 is each repo's configured ``git config user.email`` so pulled/fetched commits
-from other people are excluded even though we scan all refs.
+from other people are excluded.
+
+We count only each repo's remote **default branch** (``origin/HEAD``), which
+mirrors GitHub's contribution rules: GitHub greens a commit once it lands on
+the default branch, not while it sits on an unpushed or unmerged feature
+branch. Counting ``--all`` diverged sharply from the user's GitHub profile
+(local/feature-branch work inflated the total), so we track the pushed default
+branch instead.
 """
 
 from __future__ import annotations
@@ -19,6 +26,9 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # A repo's configured author email rarely changes within a session; cache it so
 # repeated recounts (every commit + the periodic poll) don't re-shell for it.
 _email_cache: dict[str, str] = {}
+
+# The default-branch ref also rarely changes within a session; cache it too.
+_default_ref_cache: dict[str, str] = {}
 
 
 def _author_email(repo_path: str) -> str:
@@ -38,14 +48,45 @@ def _author_email(repo_path: str) -> str:
     return email
 
 
+def _default_ref(repo_path: str) -> str:
+    """The ref to count: the remote default branch.
+
+    Prefers ``origin/HEAD`` (the branch a fresh clone checks out). Falls back
+    to ``origin/main``/``origin/master`` when ``HEAD`` isn't set on the remote,
+    then to local ``HEAD`` for repos without an ``origin`` at all. Empty string
+    only if none resolve. Cached per repo.
+    """
+    if repo_path in _default_ref_cache:
+        return _default_ref_cache[repo_path]
+    ref = ""
+    for candidate in ("origin/HEAD", "origin/main", "origin/master", "HEAD"):
+        try:
+            r = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "--verify",
+                 "--quiet", candidate],
+                capture_output=True, text=True, timeout=5,
+                creationflags=_NO_WINDOW,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                ref = candidate
+                break
+        except (OSError, subprocess.SubprocessError):
+            pass
+    _default_ref_cache[repo_path] = ref
+    return ref
+
+
 def _repo_commits_today(repo_path: str) -> int:
-    """Commits authored today in one repo, across all branches. 0 on error."""
+    """Commits authored today on the repo's default branch. 0 on error."""
+    ref = _default_ref(repo_path)
+    if not ref:
+        return 0
     args = ["git", "-C", repo_path, "rev-list", "--count",
-            "--since=midnight", "--all"]
+            "--since=midnight", ref]
     email = _author_email(repo_path)
     if email:
-        # rev-list dedupes, so a commit on several refs counts once; the author
-        # filter keeps it to this identity's work.
+        # Keep the count to this identity's work (pulled commits from others on
+        # the default branch are excluded).
         args.append(f"--author={email}")
     try:
         r = subprocess.run(
