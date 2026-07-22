@@ -160,9 +160,9 @@ class CommitMeter(QWidget):
 
     # At/above the goal is green; a respectable-but-short day is amber rather
     # than a discouraging red. Below this it's red.
-    _AMBER_THRESHOLD = 20
+    _AMBER_THRESHOLD = 10
 
-    def __init__(self, goal: int = 35, parent=None):
+    def __init__(self, goal: int = 15, parent=None):
         super().__init__(parent)
         self._goal = goal
         self._count: int | None = None
