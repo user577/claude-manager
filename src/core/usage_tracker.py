@@ -13,6 +13,7 @@ an auth error rather than a crash.
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
+
+_log = logging.getLogger("claude_manager")
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA = "oauth-2025-04-20"
@@ -103,10 +106,12 @@ def fetch_usage(timeout: float = 15.0) -> UsageData:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.load(resp)
     except urllib.error.HTTPError as e:
+        _log.warning("usage HTTPError: %r", e)
         if e.code in (401, 403):
             return UsageData(ok=False, error="Auth expired (run `claude`)")
         return UsageData(ok=False, error=f"HTTP {e.code}")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
+        _log.warning("usage connection error: %r | reason=%r", e, getattr(e, "reason", None))
         return UsageData(ok=False, error="Offline")
     except json.JSONDecodeError:
         return UsageData(ok=False, error="Bad response")
@@ -202,5 +207,6 @@ class UsageWorker(QThread):
         try:
             data = fetch_usage()
         except Exception as e:  # noqa: BLE001 - last-resort guard, see above
+            _log.exception("usage fetch raised")
             data = UsageData(ok=False, error=f"Internal error: {e}")
         self.result.emit(data)
