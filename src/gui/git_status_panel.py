@@ -112,14 +112,20 @@ class GitStatusPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setMaximumHeight(260)
+        # Cards are 52px tall on a 2px-spaced layout, so the visible repo count
+        # is height/54. Cap at 10 cards (was 5) and floor at 4 so a short window
+        # still shows a usable list instead of collapsing to one or two rows.
+        scroll.setMinimumHeight(216)
+        scroll.setMaximumHeight(540)
 
         self.cards_container = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_container)
         self.cards_layout.setSpacing(2)
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(self.cards_container)
-        layout.addWidget(scroll)
+        # Stretch factor so spare vertical space grows the repo list (up to its
+        # cap) rather than being absorbed by the log or the trailing stretch.
+        layout.addWidget(scroll, 1)
 
         self.cards: dict[str, RepoStatusCard] = {}
 
@@ -240,6 +246,8 @@ class GitStatusPanel(QWidget):
 
         # --- Log ---
         self.log = LogOutput()
+        # Floor the log so the taller repo list can't squeeze it to nothing.
+        self.log.setMinimumHeight(90)
         layout.addWidget(self.log)
 
         layout.addStretch()
