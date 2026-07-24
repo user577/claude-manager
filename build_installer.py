@@ -1,4 +1,5 @@
 """One-click build: clean .pyc -> PyInstaller -> Inno Setup."""
+import os
 import shutil
 import subprocess
 import sys
@@ -6,6 +7,44 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 VERSION = "1.0.0"
+
+# Sentinel so a venv python that reports an unexpected sys.executable can't
+# send us into an endless re-exec loop.
+_REEXEC_FLAG = "CLAUDE_MANAGER_BUILD_REEXEC"
+
+
+def venv_python():
+    if os.name == "nt":
+        return ROOT / ".venv" / "Scripts" / "python.exe"
+    return ROOT / ".venv" / "bin" / "python"
+
+
+def ensure_project_venv():
+    """Re-run under the project venv if invoked with a different interpreter.
+
+    The interpreter that runs PyInstaller decides what gets frozen — the spec
+    pins OpenSSL to *its* base_prefix/DLLs, and PySide6 comes from its
+    site-packages. A stray `python build_installer.py` picking up some other
+    Python on PATH produces a bundle that builds clean and is broken at
+    runtime, so re-exec instead of trusting whatever was used.
+    """
+    py = venv_python()
+    if not py.is_file():
+        sys.exit(f"Project venv not found at {py}\nCreate it first:  uv sync")
+
+    try:
+        already_venv = Path(sys.executable).resolve() == py.resolve()
+    except OSError:
+        already_venv = False
+    if already_venv or os.environ.get(_REEXEC_FLAG) == "1":
+        return
+
+    print(f"=== Wrong interpreter ({sys.executable}) ===")
+    print(f"=== Re-running under project venv: {py} ===")
+    env = {**os.environ, _REEXEC_FLAG: "1"}
+    r = subprocess.run([str(py), str(Path(__file__).resolve()), *sys.argv[1:]],
+                       cwd=ROOT, env=env)
+    sys.exit(r.returncode)
 
 ISCC_PATHS = [
     Path.home() / r"AppData\Local\Programs\Inno Setup 6\ISCC.exe",
@@ -77,6 +116,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-inno", action="store_true")
     args = parser.parse_args()
+
+    ensure_project_venv()
+    print(f"=== Python {sys.version.split()[0]} ({sys.executable}) ===")
 
     clean_pyc()
     clean_build()
