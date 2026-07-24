@@ -35,6 +35,40 @@ AUTO_COMMIT_PROMPT = (
 )
 
 
+# Urgency ladder for the Status sort, most urgent first. First match wins, so
+# order matters: behind+modified has to precede plain behind. Single source of
+# truth for both _urgency_rank() and the sort dropdown's tooltip — these were
+# two hand-maintained lists that had already drifted apart.
+#
+# "error" leads rather than trailing: an errored repo (vanished path, unreadable
+# git dir) already paints the same red dot as diverged, so burying it below the
+# clean repos put a red card at the bottom of an "urgent first" sort.
+URGENCY_TIERS = (
+    ("error", lambda s: bool(s.error)),
+    ("diverged", lambda s: s.diverged),
+    ("behind+modified", lambda s: s.behind > 0 and s.modified_count > 0),
+    ("behind", lambda s: s.behind > 0),
+    ("modified", lambda s: s.modified_count > 0),
+    ("ahead", lambda s: s.ahead > 0),
+    ("untracked", lambda s: s.untracked_count > 0),
+    ("clean", lambda s: True),
+)
+
+# Not yet scanned is unknown, not healthy — it sorts below every scanned tier
+# (including clean) so a pending scan never outranks a real result.
+UNSCANNED_RANK = len(URGENCY_TIERS)
+
+URGENCY_TOOLTIP = " → ".join(name for name, _ in URGENCY_TIERS) + " → unscanned"
+
+
+def _urgency_rank(status) -> int:
+    """Lower = more urgent. Pure so it can be tested without a QApplication."""
+    for rank, (_, matches) in enumerate(URGENCY_TIERS):
+        if matches(status):
+            return rank
+    return UNSCANNED_RANK
+
+
 class GitStatusPanel(QWidget):
     # Emitted after a git operation finishes (commit/push/pull) so the toolbar
     # commit meter can refresh without polling.
@@ -88,8 +122,8 @@ class GitStatusPanel(QWidget):
         self.sort_combo.addItem("Status (urgent first)", "status")
         self.sort_combo.setFixedWidth(170)
         self.sort_combo.setToolTip(
-            "Sort repos by name, last commit date, or status urgency "
-            "(diverged → behind → modified → ahead → untracked → clean)"
+            "Sort repos by name, last commit date, or status urgency\n"
+            f"({URGENCY_TOOLTIP})"
         )
         # Restore saved sort preference
         saved_idx = self.sort_combo.findData(self.settings.repo_sort)
@@ -441,25 +475,11 @@ class GitStatusPanel(QWidget):
             self.cards_layout.insertWidget(i, card)
 
     def _seriousness(self, path: str) -> tuple[int, str]:
-        """Lower rank = more serious. Used by Status sort."""
+        """Lower rank = more serious, alphabetical tiebreaker. Status sort key."""
         s = self._statuses.get(path)
-        label = (s.label if s and s.label else path).lower()
-        # No scan data or errored repo: treat as inactionable — bottom of list.
-        if s is None or s.error:
-            return (6, label)
-        if s.diverged:
-            return (0, label)
-        if s.behind > 0 and s.modified_count > 0:
-            return (1, label)
-        if s.behind > 0:
-            return (2, label)
-        if s.modified_count > 0:
-            return (3, label)
-        if s.ahead > 0:
-            return (4, label)
-        if s.untracked_count > 0:
-            return (5, label)
-        return (6, label)
+        if s is None:
+            return (UNSCANNED_RANK, path.lower())
+        return (_urgency_rank(s), (s.label or path).lower())
 
     def _select_dirty(self):
         """Highlight dirty repos by scrolling log — future: multi-select cards."""
