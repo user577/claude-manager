@@ -772,7 +772,7 @@ class GitStatusPanel(QWidget):
     def _launch_agent_heavy(self, repo_path: str):
         """Launch an auto-scaling multi-agent session against the repo.
 
-        Loads the Haiku->Sonnet->Opus subagent ladder via --add-dir (session-
+        Loads the Haiku->Sonnet->Opus->Fable subagent ladder via --add-dir (session-
         scoped; nothing written to the repo) and primes the orchestrator with
         the sizing policy so it delegates each task to the cheapest tier that
         fits. The per-tier models are pinned in the ladder, so routing is
@@ -799,7 +799,7 @@ class GitStatusPanel(QWidget):
         # BEFORE --add-dir: that flag is variadic, so a positional argument
         # directly after it is silently consumed as an extra directory.
         kickoff = (
-            "Confirm Agent Heavy mode: list your five ladder subagents with "
+            "Confirm Agent Heavy mode: list your six ladder subagents with "
             "their models, one line each, then wait for my task."
         )
         claude_cmd = (

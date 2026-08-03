@@ -1,8 +1,9 @@
 """Agent Heavy mode — a graded ladder of Claude Code subagents plus a sizing
 policy, used to launch an auto-scaling multi-agent session against a repo.
 
-The ladder spans Haiku -> Sonnet -> Opus so the orchestrator can size each
-task and delegate to the cheapest tier that fits, escalating only when needed.
+The ladder spans Haiku -> Sonnet -> Opus -> Fable so the orchestrator can size
+each task and delegate to the cheapest tier that fits, escalating only when
+needed.
 Subagents run in isolated contexts and return summaries, so exploration/tool
 noise never bloats the orchestrator's window.
 
@@ -101,6 +102,23 @@ acting. State your assumptions explicitly. Verify your work end-to-end (run it,
 test it) rather than assuming it is correct. Return a clear summary of what you
 did and any residual risk.
 """),
+    ("oracle.md", """\
+---
+name: oracle
+description: Highest-capability escalation of last resort. Use ONLY when
+  deep-worker has failed, returned uncertainty, or reviewer has rejected the
+  same work twice. The most expensive tier — never the first choice.
+model: fable
+effort: high
+---
+
+You are the escalation of last resort — by the time a task reaches you, a
+capable model has already failed at it. Re-derive the problem from scratch:
+do not patch or rubber-stamp the failed attempt, and question its framing and
+assumptions before accepting any of them. Verify your solution end-to-end
+(run it, test it). Return what you did, why the previous approach failed, and
+any residual risk.
+"""),
 ]
 
 
@@ -109,7 +127,7 @@ did and any residual risk.
 # semicolons are fine — the launcher escapes them for wt.exe ("\;").
 SIZING_POLICY = (
     "You are running in Agent Heavy mode: an auto-scaling multi-agent setup. "
-    "Five subagents are available (via the Agent tool) and you should size every "
+    "Six subagents are available (via the Agent tool) and you should size every "
     "non-trivial task and delegate to the cheapest tier that fits, escalating "
     "only when a cheaper tier returns uncertainty or fails:\n"
     "- scout (Haiku): find files, symbols, call sites; any search or orientation.\n"
@@ -120,6 +138,9 @@ SIZING_POLICY = (
     "before accepting the work.\n"
     "- deep-worker (Opus): cross-file reasoning, hard debugging, architecture, "
     "correctness-critical work. Reserve it for genuinely hard sub-tasks.\n"
+    "- oracle (Fable): escalation of last resort. Use ONLY when deep-worker "
+    "has failed, returned uncertainty, or reviewer has rejected the same work "
+    "twice — never as a first choice.\n"
     "Fan out independent subtasks in parallel. For a single sequential edit you "
     "can already see, just do it directly rather than delegating. Keep your own "
     "context lean by letting subagents absorb search and tool-output noise."
