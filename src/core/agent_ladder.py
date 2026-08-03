@@ -68,6 +68,24 @@ You implement one scoped change. Match the surrounding code's conventions and
 idioms. Run the relevant tests before returning. Summarize what changed in two
 or three lines — do not paste large diffs back to the orchestrator.
 """),
+    ("reviewer.md", """\
+---
+name: reviewer
+description: Verifies a just-completed change against its acceptance criteria
+  before the orchestrator accepts it. Use after implementer or deep-worker
+  returns. Inspects only — never fixes.
+tools: Bash, Read, Glob, Grep
+model: sonnet
+effort: medium
+---
+
+You adversarially review one change against its stated acceptance criteria.
+Read the diff (git diff / git status) and the surrounding code; look for
+criteria not actually met, edge cases missed, and conventions broken. You are
+read-only: run only inspection commands (git diff, git log), never edit files
+or run write commands, and never fix what you find. Lead with a verdict
+(ACCEPT / REJECT), then list concrete reasons with file:line references.
+"""),
     ("deep-worker.md", """\
 ---
 name: deep-worker
@@ -87,20 +105,42 @@ did and any residual risk.
 
 
 # Appended to the launch prompt so the orchestrator knows the ladder exists and
-# how to size work against it. Kept free of double quotes to stay shell-safe.
+# how to size work against it. Kept free of double quotes to stay shell-safe;
+# semicolons are fine — the launcher escapes them for wt.exe ("\;").
 SIZING_POLICY = (
     "You are running in Agent Heavy mode: an auto-scaling multi-agent setup. "
-    "Four subagents are available (via the Agent tool) and you should size every "
+    "Five subagents are available (via the Agent tool) and you should size every "
     "non-trivial task and delegate to the cheapest tier that fits, escalating "
     "only when a cheaper tier returns uncertainty or fails:\n"
     "- scout (Haiku): find files, symbols, call sites; any search or orientation.\n"
     "- runner (Haiku): run tests, lint, build, git status; report pass/fail.\n"
     "- implementer (Sonnet): one scoped change with clear acceptance criteria.\n"
+    "- reviewer (Sonnet): adversarially verify a completed change against its "
+    "acceptance criteria; run it after implementer or deep-worker returns, "
+    "before accepting the work.\n"
     "- deep-worker (Opus): cross-file reasoning, hard debugging, architecture, "
     "correctness-critical work. Reserve it for genuinely hard sub-tasks.\n"
     "Fan out independent subtasks in parallel. For a single sequential edit you "
     "can already see, just do it directly rather than delegating. Keep your own "
     "context lean by letting subagents absorb search and tool-output noise."
+)
+
+
+# Appended to the Agent Team launch prompt. Unlike the ladder's cost-first
+# sizing policy, this optimizes wall-clock time: full parallel sessions
+# coordinated through Agent Teams' shared task list. Same shell-safety rules
+# as SIZING_POLICY apply (no double quotes).
+TEAM_POLICY = (
+    "You are running in Agent Team mode as the team lead of a multi-session "
+    "Claude Code team. Optimize for wall-clock speed, not token economy: split "
+    "the work into independent workstreams and spawn a teammate for each. "
+    "Teammates are full sessions with their own context windows that "
+    "coordinate through the shared task list and can message each other "
+    "directly. The ladder subagent definitions (scout, runner, implementer, "
+    "reviewer, deep-worker) are available as teammate templates where they "
+    "fit. Keep the shared task list current, have completed work reviewed "
+    "before integrating it, and reserve your own context for planning, "
+    "coordination, and final review rather than doing the work yourself."
 )
 
 

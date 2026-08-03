@@ -12,7 +12,7 @@ from src.config.settings import Settings, RepoInfo
 from src.core.repo_scanner import RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo
 from src.core.git_operations import GitWorker, CloneWorker
 from src.core.process_launcher import LaunchWorker
-from src.core.agent_ladder import ensure_ladder, SIZING_POLICY
+from src.core.agent_ladder import ensure_ladder, SIZING_POLICY, TEAM_POLICY
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
 from src.gui.commit_confirm_dialog import CommitConfirmDialog
@@ -310,6 +310,7 @@ class GitStatusPanel(QWidget):
             card.launch_requested.connect(self._launch_single)
             card.launch_auto_requested.connect(self._launch_single_auto)
             card.agent_heavy_requested.connect(self._launch_agent_heavy)
+            card.agent_team_requested.connect(self._launch_agent_team)
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
 
@@ -732,6 +733,42 @@ class GitStatusPanel(QWidget):
         """Launch with --dangerously-skip-permissions for unattended use."""
         self._launch_repo(repo_path, auto=True)
 
+    @staticmethod
+    def _guardrail(repo_path: str) -> str:
+        return (
+            f"You are working in the project at {repo_path}. "
+            "All new files, edits, and code generation MUST stay within this "
+            "project directory. Do not create or modify files outside of it."
+        )
+
+    @staticmethod
+    def _escape_prompt(text: str) -> str:
+        """Make prompt text safe to embed in a double-quoted cmd.exe argument.
+        Flattened to one line — cmd.exe /k treats embedded newlines in the
+        argument as command terminators, which would truncate the prompt."""
+        return " ".join(text.split()).replace('"', '\\"')
+
+    def _spawn_claude_window(self, title: str, cwd: str, claude_cmd: str,
+                             mode: str, repo_label: str):
+        """Open a new Windows Terminal window running claude_cmd via cmd.exe /k.
+
+        wt.exe splits its command line on ";" even inside quoted arguments,
+        then tries to run the tail as a separate subcommand (0x80070002), so
+        semicolons are escaped ("\\;") to pass through literally.
+        """
+        claude_cmd = claude_cmd.replace(";", "\\;")
+        cmd = [
+            "wt.exe", "--window", "new",
+            "--title", title,
+            "-d", cwd,
+            "cmd.exe", "/k", claude_cmd,
+        ]
+        try:
+            subprocess.Popen(cmd)
+            self.log.log_ok(f"Launched Claude ({mode}) in {repo_label}")
+        except Exception as e:
+            self.log.log_err(f"Failed to launch: {e}")
+
     def _launch_agent_heavy(self, repo_path: str):
         """Launch an auto-scaling multi-agent session against the repo.
 
@@ -753,34 +790,68 @@ class GitStatusPanel(QWidget):
             return
 
         uid = uuid.uuid4().hex[:8]
-        title = f"Claude-{repo.label}-agents-{uid}"
-
-        prompt = (
-            f"You are working in the project at {repo.path}. "
-            "All new files, edits, and code generation MUST stay within this "
-            "project directory. Do not create or modify files outside of it. "
-            + SIZING_POLICY
+        escaped = self._escape_prompt(self._guardrail(repo.path) + " " + SIZING_POLICY)
+        # The policy rides in the system prompt rather than the first user turn
+        # so it survives context compaction in long sessions, and the
+        # orchestrator itself is pinned to the top tier — sizing decisions are
+        # the one place a cheap default model would hurt the most.
+        # Kickoff makes the mode visible and self-verifying on launch. It sits
+        # BEFORE --add-dir: that flag is variadic, so a positional argument
+        # directly after it is silently consumed as an extra directory.
+        kickoff = (
+            "Confirm Agent Heavy mode: list your five ladder subagents with "
+            "their models, one line each, then wait for my task."
         )
-        # Flatten to a single line — cmd.exe /k treats embedded newlines in the
-        # argument as command terminators, which would truncate the prompt.
-        prompt = " ".join(prompt.split())
-        escaped = prompt.replace('"', '\\"')
         claude_cmd = (
-            f'claude --dangerously-skip-permissions '
-            f'--add-dir "{ladder_root}" "{escaped}"'
+            f'claude "{kickoff}" --dangerously-skip-permissions --model opus '
+            f'--add-dir "{ladder_root}" --append-system-prompt "{escaped}"'
         )
+        self._spawn_claude_window(
+            f"Claude-{repo.label}-agents-{uid}", repo.path, claude_cmd,
+            "Agent Heavy", repo.label)
 
-        cmd = [
-            "wt.exe", "--window", "new",
-            "--title", title,
-            "-d", repo.path,
-            "cmd.exe", "/k", claude_cmd,
-        ]
+    def _launch_agent_team(self, repo_path: str):
+        """Launch an Agent Teams lead session against the repo.
+
+        The parallelism-first alternative to Agent Heavy: instead of cheap
+        subagent tiers inside one session, the lead spawns full parallel
+        Claude sessions (teammates) that coordinate through a shared task
+        list. Fastest wall-clock on big divisible work, at much higher token
+        cost. The ladder is still loaded so its agent definitions can serve
+        as teammate templates. Agent Teams is experimental, gated behind
+        CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS.
+        """
+        repo = next((r for r in self.settings.repos if r.path == repo_path), None)
+        if not repo:
+            self.log.log_err(f"Repo not found: {repo_path}")
+            return
+
         try:
-            subprocess.Popen(cmd)
-            self.log.log_ok(f"Launched Claude (Agent Heavy) in {repo.label}")
+            ladder_root = ensure_ladder()
         except Exception as e:
-            self.log.log_err(f"Failed to launch: {e}")
+            self.log.log_err(f"Failed to prepare agent ladder: {e}")
+            return
+
+        uid = uuid.uuid4().hex[:8]
+        escaped = self._escape_prompt(self._guardrail(repo.path) + " " + TEAM_POLICY)
+        # The experimental gate is set inside the launched shell (not via
+        # Popen env) because wt.exe may hand the tab off to an existing
+        # terminal broker process, which would drop inherited environment.
+        # Kickoff before --add-dir for the same variadic-consumption reason as
+        # in _launch_agent_heavy.
+        kickoff = (
+            "Confirm Agent Team mode: state whether teammate spawning (Agent "
+            "Teams) is available in this session and list the ladder agent "
+            "definitions usable as teammate templates, then wait for my task."
+        )
+        claude_cmd = (
+            f'set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1&& '
+            f'claude "{kickoff}" --dangerously-skip-permissions --model opus '
+            f'--add-dir "{ladder_root}" --append-system-prompt "{escaped}"'
+        )
+        self._spawn_claude_window(
+            f"Claude-{repo.label}-team-{uid}", repo.path, claude_cmd,
+            "Agent Team", repo.label)
 
     def _launch_repo(self, repo_path: str, auto: bool):
         repo = next((r for r in self.settings.repos if r.path == repo_path), None)
@@ -789,29 +860,12 @@ class GitStatusPanel(QWidget):
             return
 
         uid = uuid.uuid4().hex[:8]
-        title = f"Claude-{repo.label}-{uid}"
-
-        guardrail = (
-            f"You are working in the project at {repo.path}. "
-            "All new files, edits, and code generation MUST stay within this "
-            "project directory. Do not create or modify files outside of it."
-        )
-        escaped = guardrail.replace('"', '\\"')
+        escaped = self._escape_prompt(self._guardrail(repo.path))
         flags = " --dangerously-skip-permissions" if auto else ""
         claude_cmd = f'claude{flags} "{escaped}"'
-
-        cmd = [
-            "wt.exe", "--window", "new",
-            "--title", title,
-            "-d", repo.path,
-            "cmd.exe", "/k", claude_cmd,
-        ]
-        try:
-            subprocess.Popen(cmd)
-            mode = "Auto" if auto else "standard"
-            self.log.log_ok(f"Launched Claude ({mode}) in {repo.label}")
-        except Exception as e:
-            self.log.log_err(f"Failed to launch: {e}")
+        self._spawn_claude_window(
+            f"Claude-{repo.label}-{uid}", repo.path, claude_cmd,
+            "Auto" if auto else "standard", repo.label)
 
     def _on_auto_commit(self):
         dirty = [r for r in self.settings.repos

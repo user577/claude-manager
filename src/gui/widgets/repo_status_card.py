@@ -29,6 +29,7 @@ class RepoStatusCard(QWidget):
     launch_requested = Signal(str)  # emits repo path
     launch_auto_requested = Signal(str)  # emits repo path — dangerously-skip-permissions
     agent_heavy_requested = Signal(str)  # emits repo path — auto-scaling subagent ladder
+    agent_team_requested = Signal(str)  # emits repo path — parallel Agent Teams lead
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -108,6 +109,26 @@ class RepoStatusCard(QWidget):
             lambda: self.agent_heavy_requested.emit(self._repo_path)
         )
         layout.addWidget(self.agent_heavy_btn)
+
+        self.agent_team_btn = QPushButton("Agent Team")
+        self.agent_team_btn.setFixedWidth(88)
+        self.agent_team_btn.setCursor(Qt.PointingHandCursor)
+        self.agent_team_btn.setToolTip(
+            "Auto launch as an Agent Teams lead (experimental): spawns full "
+            "parallel Claude sessions that coordinate via a shared task list "
+            "and direct messaging. Fastest wall-clock on big parallelizable "
+            "work, but burns far more tokens than Agent Heavy — which stays "
+            "the better default when cost matters."
+        )
+        self.agent_team_btn.setStyleSheet(
+            "QPushButton { background: #1f6f8b; color: #ffffff; border: none; "
+            "border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: bold; }"
+            "QPushButton:hover { background: #2e8cab; }"
+        )
+        self.agent_team_btn.clicked.connect(
+            lambda: self.agent_team_requested.emit(self._repo_path)
+        )
+        layout.addWidget(self.agent_team_btn)
 
     def update_status(self, status: RepoStatus):
         self._repo_path = status.path
