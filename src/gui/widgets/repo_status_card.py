@@ -95,10 +95,12 @@ class RepoStatusCard(QWidget):
         self.agent_heavy_btn.setCursor(Qt.PointingHandCursor)
         self.agent_heavy_btn.setToolTip(
             "Auto launch (--dangerously-skip-permissions) with an enforced "
-            "Haiku->Sonnet->Opus subagent ladder (scout/runner/implementer/"
-            "deep-worker) loaded via --add-dir. The orchestrator sizes each task "
-            "and delegates to the cheapest tier that fits, escalating only when "
-            "needed. Best for substantial tasks — overkill for quick edits."
+            "Haiku->Sonnet->Opus->Fable subagent ladder (scout/runner/"
+            "implementer/reviewer/deep-worker/oracle) loaded via --add-dir. "
+            "The orchestrator sizes each task and delegates to the cheapest "
+            "tier that fits; Fable steps in only when Opus fails or the "
+            "reviewer keeps rejecting. Best for substantial tasks — overkill "
+            "for quick edits."
         )
         self.agent_heavy_btn.setStyleSheet(
             "QPushButton { background: #6e40c9; color: #ffffff; border: none; "
