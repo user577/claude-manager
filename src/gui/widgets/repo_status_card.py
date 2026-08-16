@@ -1,8 +1,11 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
+)
 
 from src.core.repo_scanner import RepoStatus
+from src.gui.widgets.elided_label import ElidedLabel
 from src.gui.styles import COLOR_CLEAN, COLOR_DIRTY, COLOR_ERROR, COLOR_UNKNOWN, COLOR_AHEAD, COLOR_BEHIND
 
 
@@ -30,6 +33,7 @@ class RepoStatusCard(QWidget):
     launch_auto_requested = Signal(str)  # emits repo path — dangerously-skip-permissions
     agent_heavy_requested = Signal(str)  # emits repo path — auto-scaling subagent ladder
     agent_team_requested = Signal(str)  # emits repo path — parallel Agent Teams lead
+    selection_changed = Signal()  # a card was (un)ticked for a tiled launch
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,38 +43,42 @@ class RepoStatusCard(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
 
+        # Ticking cards is how repos are picked for a tiled multi-launch; the
+        # Select Dirty/Ahead/Behind buttons drive these too.
+        self.select_check = QCheckBox()
+        self.select_check.setCursor(Qt.PointingHandCursor)
+        self.select_check.setToolTip("Select for a tiled launch")
+        self.select_check.toggled.connect(lambda _: self.selection_changed.emit())
+        layout.addWidget(self.select_check)
+
         self.dot = StatusDot()
         layout.addWidget(self.dot)
 
         info_layout = QVBoxLayout()
         info_layout.setSpacing(0)
 
-        self.name_label = QLabel("repo-name")
-        self.name_label.setStyleSheet("font-weight: bold; font-size: 13px;")
+        self.name_label = ElidedLabel("repo-name")
+        self.name_label.setObjectName("cardName")
         info_layout.addWidget(self.name_label)
 
-        self.detail_label = QLabel("")
-        self.detail_label.setStyleSheet("font-size: 11px; color: #9e9e9e;")
+        self.detail_label = ElidedLabel("")
+        self.detail_label.setObjectName("cardDetail")
         info_layout.addWidget(self.detail_label)
 
         layout.addLayout(info_layout, 1)
 
-        self.commit_label = QLabel("")
-        self.commit_label.setStyleSheet(
-            "font-family: 'Cascadia Mono', 'Consolas', monospace; "
-            "font-size: 11px; color: #6e6e6e;"
-        )
+        # Elided and width-capped: a long commit subject used to widen the
+        # whole row and push the trailing buttons off the right edge.
+        self.commit_label = ElidedLabel("")
+        self.commit_label.setObjectName("cardCommit")
+        self.commit_label.setMaximumWidth(260)
         self.commit_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         layout.addWidget(self.commit_label)
 
         self.launch_btn = QPushButton("Launch")
         self.launch_btn.setFixedWidth(60)
         self.launch_btn.setCursor(Qt.PointingHandCursor)
-        self.launch_btn.setStyleSheet(
-            "QPushButton { background: #474747; color: #cccccc; border: none; "
-            "border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
-            "QPushButton:hover { background: #555555; }"
-        )
+        self.launch_btn.setObjectName("cardLaunchBtn")
         self.launch_btn.clicked.connect(lambda: self.launch_requested.emit(self._repo_path))
         layout.addWidget(self.launch_btn)
 
@@ -80,11 +88,7 @@ class RepoStatusCard(QWidget):
         self.launch_auto_btn.setToolTip(
             "Launch with --dangerously-skip-permissions (no confirmation prompts)"
         )
-        self.launch_auto_btn.setStyleSheet(
-            "QPushButton { background: #8b3a3a; color: #ffffff; border: none; "
-            "border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: bold; }"
-            "QPushButton:hover { background: #a84545; }"
-        )
+        self.launch_auto_btn.setObjectName("cardAutoBtn")
         self.launch_auto_btn.clicked.connect(
             lambda: self.launch_auto_requested.emit(self._repo_path)
         )
@@ -102,11 +106,7 @@ class RepoStatusCard(QWidget):
             "reviewer keeps rejecting. Best for substantial tasks — overkill "
             "for quick edits."
         )
-        self.agent_heavy_btn.setStyleSheet(
-            "QPushButton { background: #6e40c9; color: #ffffff; border: none; "
-            "border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: bold; }"
-            "QPushButton:hover { background: #8b5cf6; }"
-        )
+        self.agent_heavy_btn.setObjectName("cardHeavyBtn")
         self.agent_heavy_btn.clicked.connect(
             lambda: self.agent_heavy_requested.emit(self._repo_path)
         )
@@ -122,18 +122,25 @@ class RepoStatusCard(QWidget):
             "work, but burns far more tokens than Agent Heavy — which stays "
             "the better default when cost matters."
         )
-        self.agent_team_btn.setStyleSheet(
-            "QPushButton { background: #1f6f8b; color: #ffffff; border: none; "
-            "border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: bold; }"
-            "QPushButton:hover { background: #2e8cab; }"
-        )
+        self.agent_team_btn.setObjectName("cardTeamBtn")
         self.agent_team_btn.clicked.connect(
             lambda: self.agent_team_requested.emit(self._repo_path)
         )
         layout.addWidget(self.agent_team_btn)
 
+    @property
+    def selected(self) -> bool:
+        return self.select_check.isChecked()
+
+    def set_selected(self, value: bool):
+        self.select_check.setChecked(value)
+
     def update_status(self, status: RepoStatus):
         self._repo_path = status.path
+        # A vanished path can't be launched into, so it can't be selected.
+        if status.error:
+            self.select_check.setChecked(False)
+        self.select_check.setEnabled(not status.error)
         self.name_label.setText(f"{status.label}  ({status.branch})")
 
         # Status details

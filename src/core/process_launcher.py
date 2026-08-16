@@ -13,6 +13,21 @@ from src.core.window_manager import (
 
 _ollama_model_cache: list[str] | None = None
 
+# --- Ollama / local-backend framework ---------------------------------------
+#
+# Retained with no UI on this install: the machinery below (model listing,
+# health, test, pull, and LaunchWorker's backend="local" branch) is kept so a
+# machine that actually runs local models can wire a front end back onto it.
+#
+# KNOWN DEFECT — the local launch path does not work as written. LaunchWorker
+# exports ANTHROPIC_BASE_URL=http://localhost:11434, but Claude Code speaks the
+# Anthropic Messages API (/v1/messages) and Ollama serves only its native
+# /api/* plus an OpenAI-compatible /v1/chat/completions. The first request 404s.
+# OllamaTestWorker below probes /v1/chat/completions, which *does* exist, so
+# "Test" reports success while an actual launch fails — do not read a passing
+# test as proof the backend works. Making this real needs a translation shim
+# (or an Ollama build that serves /v1/messages), not a config tweak.
+
 
 def stop_worker(thread, wait_ms: int = 3000) -> bool:
     """Stop a background :class:`QThread` cleanly for shutdown.
@@ -177,6 +192,33 @@ class OllamaPullWorker(QThread):
             self.finished.emit(False, str(e))
 
 
+def escape_prompt(text: str) -> str:
+    """Make prompt text safe to embed in a double-quoted cmd.exe argument.
+
+    Flattened to one line — cmd.exe /k treats embedded newlines in the argument
+    as command terminators, which would truncate the prompt.
+    """
+    return " ".join(text.split()).replace('"', '\\"')
+
+
+def build_wt_command(title: str, cwd: str, shell_cmd: str) -> list[str]:
+    """Build the wt.exe argv that opens `shell_cmd` in a new titled window.
+
+    wt.exe splits its command line on ";" even inside quoted arguments, then
+    tries to run the tail as a separate subcommand (0x80070002), so semicolons
+    are escaped ("\\;") to pass through literally.
+
+    Every launch path goes through here. Hand-rolling the argv is how the
+    semicolon bug survived in LaunchWorker long after the git panel fixed it.
+    """
+    return [
+        "wt.exe", "--window", "new",
+        "--title", title,
+        "-d", cwd,
+        "cmd.exe", "/k", shell_cmd.replace(";", "\\;"),
+    ]
+
+
 def _make_title(label: str, uid: str) -> str:
     return f"Claude-{label}-{uid}"
 
@@ -241,8 +283,7 @@ class LaunchWorker(QThread):
                 claude_cmd += f" --name {repo.label}"
 
             if self.initial_prompt.strip():
-                escaped = self.initial_prompt.replace('"', '\\"')
-                claude_cmd += f' "{escaped}"'
+                claude_cmd += f' "{escape_prompt(self.initial_prompt)}"'
 
             # Build the shell command — prepend env vars for local backend
             if self.backend == "local":
@@ -254,12 +295,7 @@ class LaunchWorker(QThread):
             else:
                 shell_cmd = claude_cmd
 
-            cmd = [
-                "wt.exe", "--window", "new",
-                "--title", title,
-                "-d", repo.path,
-                "cmd.exe", "/k", shell_cmd,
-            ]
+            cmd = build_wt_command(title, repo.path, shell_cmd)
             try:
                 subprocess.Popen(cmd)
                 backend_label = f" [local:{self.local_model}]" if self.backend == "local" else ""

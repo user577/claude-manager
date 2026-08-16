@@ -11,7 +11,9 @@ from PySide6.QtWidgets import (
 from src.config.settings import Settings, RepoInfo
 from src.core.repo_scanner import RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo
 from src.core.git_operations import GitWorker, CloneWorker
-from src.core.process_launcher import LaunchWorker
+from src.core.process_launcher import (
+    LaunchWorker, build_wt_command, escape_prompt,
+)
 from src.core.agent_ladder import ensure_ladder, SIZING_POLICY, TEAM_POLICY
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
@@ -79,6 +81,7 @@ class GitStatusPanel(QWidget):
         self.settings = settings
         self._scanner = None
         self._git_worker = None
+        self._tile_worker = None
         self._statuses: dict[str, RepoStatus] = {}
 
         layout = QVBoxLayout(self)
@@ -187,8 +190,54 @@ class GitStatusPanel(QWidget):
         self.out_of_sync_btn.clicked.connect(self._apply_filters)
         select_row.addWidget(self.out_of_sync_btn)
 
+        clear_sel_btn = QPushButton("Clear")
+        clear_sel_btn.setMinimumWidth(60)
+        clear_sel_btn.setToolTip("Untick every selected repo")
+        clear_sel_btn.clicked.connect(lambda: self._set_selection(lambda s: False))
+        select_row.addWidget(clear_sel_btn)
+
         select_row.addStretch()
         layout.addLayout(select_row)
+
+        # --- Tiled multi-launch ---
+        # The one feature worth keeping from the old Launch tab: open Claude in
+        # several repos at once and tile the windows across the work area.
+        tile_row = QHBoxLayout()
+
+        tile_row.addWidget(QLabel("Layout:"))
+        self.layout_combo = QComboBox()
+        for label, key in (("2x2 Grid", "grid_2x2"), ("Vertical", "vertical"),
+                           ("Horizontal", "horizontal"), ("Single", "single")):
+            self.layout_combo.addItem(label, key)
+        idx = self.layout_combo.findData(self.settings.layout)
+        if idx >= 0:
+            self.layout_combo.setCurrentIndex(idx)
+        self.layout_combo.currentIndexChanged.connect(self._save_launch_prefs)
+        tile_row.addWidget(self.layout_combo)
+
+        tile_row.addWidget(QLabel("Model:"))
+        self.model_combo = QComboBox()
+        for label, key in (("Default", "default"), ("Haiku", "haiku"),
+                           ("Sonnet", "sonnet"), ("Opus", "opus"),
+                           ("Fable", "fable")):
+            self.model_combo.addItem(label, key)
+        idx = self.model_combo.findData(self.settings.model)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+        self.model_combo.currentIndexChanged.connect(self._save_launch_prefs)
+        tile_row.addWidget(self.model_combo)
+
+        self.launch_tiled_btn = QPushButton("Launch Tiled")
+        self.launch_tiled_btn.setObjectName("launchBtn")
+        self.launch_tiled_btn.setToolTip(
+            "Open Claude in every ticked repo and tile the windows"
+        )
+        self.launch_tiled_btn.setEnabled(False)
+        self.launch_tiled_btn.clicked.connect(self._on_launch_tiled)
+        tile_row.addWidget(self.launch_tiled_btn)
+
+        tile_row.addStretch()
+        layout.addLayout(tile_row)
 
         # --- Commit section ---
         commit_row = QHBoxLayout()
@@ -311,14 +360,16 @@ class GitStatusPanel(QWidget):
             card.launch_auto_requested.connect(self._launch_single_auto)
             card.agent_heavy_requested.connect(self._launch_agent_heavy)
             card.agent_team_requested.connect(self._launch_agent_team)
+            card.selection_changed.connect(self._on_selection_changed)
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
+        self._on_selection_changed()
 
     def stop_workers(self):
         """Stop any running background threads for a clean shutdown."""
         from src.core.process_launcher import stop_worker
-        for attr in ("_scanner", "_git_worker", "_gh_sync",
-                     "_clone_worker", "_auto_commit_worker"):
+        for attr in ("_scanner", "_git_worker", "_gh_sync", "_clone_worker",
+                     "_auto_commit_worker", "_tile_worker"):
             stop_worker(getattr(self, attr, None))
 
     def scan_all(self, fetch: bool = False):
@@ -482,30 +533,117 @@ class GitStatusPanel(QWidget):
             return (UNSCANNED_RANK, path.lower())
         return (_urgency_rank(s), (s.label or path).lower())
 
-    def _select_dirty(self):
-        """Highlight dirty repos by scrolling log — future: multi-select cards."""
-        dirty = [s.label for s in self._statuses.values() if s.dirty]
-        if dirty:
+    # --- Card selection -------------------------------------------------------
+
+    def _set_selection(self, matches) -> list[str]:
+        """Tick every card whose status satisfies `matches`, untick the rest.
+
+        Returns the labels of the ticked repos. Unscanned repos have no status
+        and are treated as non-matching.
+        """
+        picked = []
+        for path, card in self.cards.items():
+            status = self._statuses.get(path)
+            hit = bool(status) and not status.error and matches(status)
+            card.set_selected(hit)
+            if hit:
+                picked.append(status.label)
+        return picked
+
+    def _select_by(self, matches, found_msg: str, empty_msg: str):
+        picked = self._set_selection(matches)
+        if picked:
             self.search_box.clear()
-            self.log.log_info(f"Dirty repos ({len(dirty)}): {', '.join(dirty)}")
+            self.log.log_info(f"{found_msg} ({len(picked)}): {', '.join(picked)}")
         else:
-            self.log.log_info("All repos are clean")
+            self.log.log_info(empty_msg)
+
+    def _select_dirty(self):
+        self._select_by(lambda s: s.dirty, "Selected dirty", "All repos are clean")
 
     def _select_ahead(self):
-        ahead = [s.label for s in self._statuses.values() if s.ahead > 0]
-        if ahead:
-            self.search_box.clear()
-            self.log.log_info(f"Ahead repos ({len(ahead)}): {', '.join(ahead)}")
-        else:
-            self.log.log_info("No repos are ahead of remote")
+        self._select_by(lambda s: s.ahead > 0, "Selected ahead",
+                        "No repos are ahead of remote")
 
     def _select_behind(self):
-        behind = [s.label for s in self._statuses.values() if s.behind > 0]
-        if behind:
-            self.search_box.clear()
-            self.log.log_info(f"Behind repos ({len(behind)}): {', '.join(behind)}")
-        else:
-            self.log.log_info("All repos are up to date with remote")
+        self._select_by(lambda s: s.behind > 0, "Selected behind",
+                        "All repos are up to date with remote")
+
+    def _selected_repos(self) -> list[RepoInfo]:
+        paths = {p for p, card in self.cards.items() if card.selected}
+        return [r for r in self.settings.repos if r.path in paths and r.exists()]
+
+    def _on_selection_changed(self):
+        count = len(self._selected_repos())
+        self.launch_tiled_btn.setEnabled(count > 0)
+        self.launch_tiled_btn.setText(
+            f"Launch Tiled ({count})" if count else "Launch Tiled"
+        )
+
+    def _save_launch_prefs(self):
+        self.settings.layout = self.layout_combo.currentData()
+        self.settings.model = self.model_combo.currentData()
+        self.settings.save()
+
+    def _on_launch_tiled(self):
+        repos = self._selected_repos()
+        if not repos:
+            self.log.log_info("No repos selected")
+            return
+        self._save_launch_prefs()
+
+        layout_key = self.layout_combo.currentData()
+        # The grid only has four cells; more windows than that would stack
+        # invisibly on top of each other, so say so rather than silently drop.
+        if layout_key == "grid_2x2" and len(repos) > 4:
+            self.log.log_info(
+                f"2x2 grid fits 4 windows — tiling the first 4 of {len(repos)}, "
+                "the rest open untiled"
+            )
+
+        self.log.log_info(f"Launching {len(repos)} tiled instance(s)...")
+        self.launch_tiled_btn.setEnabled(False)
+        self._tile_worker = LaunchWorker(
+            repos=repos,
+            layout=layout_key,
+            count=len(repos),
+            permission_mode="default",
+            model=self.model_combo.currentData(),
+            backend="cloud",
+            # Same directory guardrail the per-card launches inject — the old
+            # Launch tab sent no prompt at all.
+            initial_prompt=self._guardrail_multi(repos),
+            use_worktree=False,
+            session_mode="new",
+            parent=self,
+        )
+        self._tile_worker.status.connect(self.log.log_info)
+        self._tile_worker.finished_ok.connect(self._on_tiled_done)
+        self._tile_worker.finished_err.connect(self._on_tiled_err)
+        self._tile_worker.start()
+
+    def _guardrail_multi(self, repos) -> str:
+        """Guardrail text shared by a tiled batch.
+
+        LaunchWorker sends one prompt to every window, so this names the common
+        parent rather than a single repo path.
+        """
+        return (
+            "You are working in the project rooted at the directory this "
+            "session opened in. All new files, edits, and code generation MUST "
+            "stay within that project directory. Do not create or modify files "
+            "outside of it."
+        )
+
+    def _on_tiled_done(self):
+        self.log.log_ok("Tiled instances launched")
+        self._tile_worker = None
+        self._on_selection_changed()
+
+    def _on_tiled_err(self, msg: str):
+        self.log.log_err(msg)
+        self._tile_worker = None
+        self._on_selection_changed()
 
     def _set_buttons_enabled(self, enabled: bool):
         self.commit_btn.setEnabled(enabled and bool(self.commit_msg.text().strip()))
@@ -517,6 +655,11 @@ class GitStatusPanel(QWidget):
         self.refresh_btn.setEnabled(enabled)
         self.fetch_refresh_btn.setEnabled(enabled)
         self.cancel_btn.setVisible(not enabled)
+        # Re-enabling defers to the selection, not the blanket flag.
+        if enabled:
+            self._on_selection_changed()
+        else:
+            self.launch_tiled_btn.setEnabled(False)
 
     def _start_operation(self, operation: str, repos, message: str = ""):
         if not repos:
@@ -741,30 +884,13 @@ class GitStatusPanel(QWidget):
             "project directory. Do not create or modify files outside of it."
         )
 
-    @staticmethod
-    def _escape_prompt(text: str) -> str:
-        """Make prompt text safe to embed in a double-quoted cmd.exe argument.
-        Flattened to one line — cmd.exe /k treats embedded newlines in the
-        argument as command terminators, which would truncate the prompt."""
-        return " ".join(text.split()).replace('"', '\\"')
+    _escape_prompt = staticmethod(escape_prompt)
 
     def _spawn_claude_window(self, title: str, cwd: str, claude_cmd: str,
                              mode: str, repo_label: str):
-        """Open a new Windows Terminal window running claude_cmd via cmd.exe /k.
-
-        wt.exe splits its command line on ";" even inside quoted arguments,
-        then tries to run the tail as a separate subcommand (0x80070002), so
-        semicolons are escaped ("\\;") to pass through literally.
-        """
-        claude_cmd = claude_cmd.replace(";", "\\;")
-        cmd = [
-            "wt.exe", "--window", "new",
-            "--title", title,
-            "-d", cwd,
-            "cmd.exe", "/k", claude_cmd,
-        ]
+        """Open a new Windows Terminal window running claude_cmd via cmd.exe /k."""
         try:
-            subprocess.Popen(cmd)
+            subprocess.Popen(build_wt_command(title, cwd, claude_cmd))
             self.log.log_ok(f"Launched Claude ({mode}) in {repo_label}")
         except Exception as e:
             self.log.log_err(f"Failed to launch: {e}")
