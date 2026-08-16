@@ -10,13 +10,18 @@ from PySide6.QtWidgets import (
 from src.constants import APP_DISPLAY_NAME, ICON_PATH
 from src.config.settings import Settings
 from src.core.process_launcher import OllamaHealthWorker
-from src.gui.launcher_panel import LauncherPanel
 from src.gui.git_status_panel import GitStatusPanel
+from src.gui.project_panel import ProjectPanel
 from src.gui.settings_dialog import SettingsDialog
 from src.gui.styles import DARK_THEME
 
 
 class MainWindow(QMainWindow):
+    # Tab positions, named so index arithmetic doesn't silently rot the next
+    # time a tab is added or removed.
+    TAB_GIT = 0
+    TAB_PROJECTS = 1
+
     def __init__(self, settings: Settings):
         super().__init__()
         self.settings = settings
@@ -147,24 +152,27 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self.launcher_panel = LauncherPanel(settings)
         self.git_panel = GitStatusPanel(settings)
         # Recount commits the moment one lands (no waiting for the poll).
         self.git_panel.commits_changed.connect(
             lambda: self._check_commits(force=True)
         )
 
-        self.tabs.addTab(self.launcher_panel, "Launch")
-        self.tabs.addTab(self.git_panel, "Git")
+        self.project_panel = ProjectPanel(settings)
 
-        # Scan repos when Git tab is first activated
+        self.tabs.addTab(self.git_panel, "Git")
+        self.tabs.addTab(self.project_panel, "Projects")
+
+        # Scan repos when the Git / Projects tabs are first activated
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self._git_scanned = False
 
         # Keyboard shortcuts
-        QShortcut(QKeySequence("Ctrl+L"), self, self.launcher_panel._on_launch)
-        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self.tabs.setCurrentIndex(0))
-        QShortcut(QKeySequence("Ctrl+2"), self, lambda: self.tabs.setCurrentIndex(1))
+        QShortcut(QKeySequence("Ctrl+L"), self, self.git_panel._on_launch_tiled)
+        QShortcut(QKeySequence("Ctrl+1"), self,
+                  lambda: self.tabs.setCurrentIndex(self.TAB_GIT))
+        QShortcut(QKeySequence("Ctrl+2"), self,
+                  lambda: self.tabs.setCurrentIndex(self.TAB_PROJECTS))
         QShortcut(QKeySequence("Ctrl+R"), self, self._refresh_git)
         QShortcut(QKeySequence("Ctrl+Return"), self, self.git_panel._on_commit)
 
@@ -268,10 +276,10 @@ class MainWindow(QMainWindow):
                 f"No folder set for {acct.username or 'this account'} — "
                 "open Settings to choose one."
             )
-        self.launcher_panel.refresh_repos()
         self.git_panel._build_cards()
+        self.project_panel.refresh_repos()
         self._git_scanned = False
-        if self.tabs.currentIndex() == 1:
+        if self.tabs.currentIndex() == self.TAB_GIT:
             self.git_panel.scan_all()
             self._git_scanned = True
 
@@ -400,9 +408,9 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QMessageBox
         shortcuts = (
             "<table cellpadding='4'>"
-            "<tr><td><b>Ctrl+L</b></td><td>Launch Claude instances</td></tr>"
-            "<tr><td><b>Ctrl+1</b></td><td>Switch to Launch tab</td></tr>"
-            "<tr><td><b>Ctrl+2</b></td><td>Switch to Git tab</td></tr>"
+            "<tr><td><b>Ctrl+L</b></td><td>Launch selected repos tiled</td></tr>"
+            "<tr><td><b>Ctrl+1</b></td><td>Switch to Git tab</td></tr>"
+            "<tr><td><b>Ctrl+2</b></td><td>Switch to Projects tab</td></tr>"
             "<tr><td><b>Ctrl+R</b></td><td>Refresh git status</td></tr>"
             "<tr><td><b>Ctrl+Enter</b></td><td>Commit all dirty repos</td></tr>"
             "</table>"
@@ -414,8 +422,8 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             dlg.apply()
             self.settings.save()
-            self.launcher_panel.refresh_repos()
             self.git_panel._build_cards()
+            self.project_panel.refresh_repos()
             self._git_scanned = False
             self._populate_accounts()  # clear any "no folder" warnings
             # Goal or repo set may have changed — re-evaluate the commit meter.
@@ -423,16 +431,18 @@ class MainWindow(QMainWindow):
             self._check_commits(force=True)
 
     def _refresh_git(self):
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentIndex(self.TAB_GIT)
         self.git_panel.scan_all()
         self._git_scanned = True
 
     def _on_tab_changed(self, index: int):
-        if index == 1:
+        if index == self.TAB_GIT:
             self._populate_accounts()
             if not self._git_scanned:
                 self.git_panel.scan_all()
                 self._git_scanned = True
+        elif index == self.TAB_PROJECTS:
+            self.project_panel.ensure_loaded()
 
     def closeEvent(self, event):
         # Save geometry and settings
@@ -441,7 +451,6 @@ class MainWindow(QMainWindow):
         self.settings.window_y = geo.y()
         self.settings.window_width = geo.width()
         self.settings.window_height = geo.height()
-        self.launcher_panel.save_state()
         self.settings.save()
 
         # Stop background timers and wait on any in-flight worker threads so we
@@ -456,7 +465,7 @@ class MainWindow(QMainWindow):
         stop_worker(self._usage_worker)
         stop_worker(self._ollama_health_worker)
         stop_worker(self._commit_worker)
-        self.launcher_panel.stop_workers()
         self.git_panel.stop_workers()
+        self.project_panel.stop_workers()
 
         super().closeEvent(event)

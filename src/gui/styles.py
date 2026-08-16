@@ -180,6 +180,47 @@ QGroupBox::title {
     left: 12px;
     padding: 0 6px;
 }
+/* Repo-card buttons. These live here rather than in per-widget setStyleSheet
+   calls because the card list is built ~116 deep: four setStyleSheet calls per
+   card cost seconds of style recalculation at startup. */
+QPushButton#cardLaunchBtn {
+    background: #474747;
+    color: #cccccc;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}
+QPushButton#cardLaunchBtn:hover {
+    background: #555555;
+}
+QPushButton#cardAutoBtn, QPushButton#cardHeavyBtn, QPushButton#cardTeamBtn {
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: bold;
+}
+QPushButton#cardAutoBtn { background: #8b3a3a; }
+QPushButton#cardAutoBtn:hover { background: #a84545; }
+QPushButton#cardHeavyBtn { background: #6e40c9; }
+QPushButton#cardHeavyBtn:hover { background: #8b5cf6; }
+QPushButton#cardTeamBtn { background: #1f6f8b; }
+QPushButton#cardTeamBtn:hover { background: #2e8cab; }
+QLabel#cardName {
+    font-weight: bold;
+    font-size: 13px;
+}
+QLabel#cardDetail {
+    font-size: 11px;
+    color: #9e9e9e;
+}
+QLabel#cardCommit {
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 11px;
+    color: #6e6e6e;
+}
 QLabel#sectionHeader {
     color: #007acc;
     font-size: 14px;

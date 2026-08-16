@@ -4,21 +4,25 @@ Launch, tile, and git-manage multiple Claude Code instances from a single Window
 
 ## What It Does
 
-Claude Manager is a PySide6 desktop app for multi-project development workflows. It lets you launch up to 4 Claude Code instances in parallel, auto-tile them across your screen, monitor git status across all your repos, and perform batch git operations — all from one window.
+Claude Manager is a PySide6 desktop app for multi-project development workflows. It monitors git status across all your repos, performs batch git operations, launches Claude Code scoped to any project, and gives you a browsable view of what each project is and what's planned next — all from one window.
+
+Two tabs: **Git** (status, batch operations, launching) and **Projects** (descriptions, plans, history).
 
 ## Features
 
-- **Multi-instance launching** with automatic window tiling (2x2 grid, vertical, horizontal, single)
 - **Git status dashboard** — dirty, ahead/behind, diverged, stash count for every repo
 - **Batch git operations** — commit, push (ahead-only), fetch+pull (ff-only) with .pyc cleanup
-- **Per-repo Claude launch** — click Launch on any repo card to open Claude scoped to that project
-- **Preset system** — save/load named configurations (repos, layout, mode, model, backend)
-- **Local LLM support** via Ollama (model pulling, testing, health monitoring)
-- **Permission modes** — Default, Accept Edits, Auto, Bypass Permissions, Plan
-- **Session management** — New, Continue last, Named (per-repo)
+- **Per-repo Claude launch** — Launch, Launch Auto, Agent Heavy (subagent ladder), and Agent Team on every repo card
+- **Tiled multi-launch** — tick any set of repos and open them all at once, auto-tiled (2x2 grid, vertical, horizontal, single)
+- **Auto Commit** — spawn a Sonnet instance per dirty repo to review changes and commit autonomously
+- **Projects tab** — browse every repo's auto-derived description, its PLAN/NEXT/ROADMAP/TODO docs, and its commit history
+- **Live usage meters** — 5-hour / 7-day limit windows plus a daily commit counter in the toolbar
+- **Multi-account** — switch GitHub accounts (via `gh`), each with its own repo folder
 - **Tag-based filtering** — organize repos with custom tags, filter in both tabs
 - **Single-instance enforcement** — Windows mutex prevents duplicate app windows
 - **VS Code Dark+ theme** — conventional charcoal/blue color scheme
+
+A local-LLM (Ollama) backend exists in `src/core/process_launcher.py` with no UI attached. It is retained for reuse on machines that run local models, and carries a documented defect — see the comment at the top of the Ollama section before wiring a front end onto it.
 
 ## Requirements
 
@@ -59,26 +63,30 @@ claude-manager/
 │   ├── app.py                     # Init, single-instance mutex, prerequisites check
 │   ├── constants.py               # App name, paths, skip dirs
 │   ├── config/
-│   │   ├── settings.py            # RepoInfo, Settings (JSON persistence)
-│   │   └── presets.py             # Preset, PresetManager (JSON persistence)
+│   │   └── settings.py            # RepoInfo, GitHubAccount, Settings (JSON)
 │   ├── core/
 │   │   ├── logger.py              # Rotating file log (1MB, 2 backups)
 │   │   ├── repo_scanner.py        # Git status scanning (QThread)
 │   │   ├── git_operations.py      # Batch commit/push/pull, .pyc cleanup
-│   │   ├── process_launcher.py    # Claude instance launch, Ollama integration
+│   │   ├── project_info.py        # Descriptions, plan docs, commit history
+│   │   ├── agent_ladder.py        # Haiku->Sonnet->Opus->Fable subagent defs
+│   │   ├── commit_counter.py      # Daily commits (GitHub contribution graph)
+│   │   ├── usage_tracker.py       # Live 5h/7d usage limits
+│   │   ├── github_accounts.py     # gh CLI account listing / switching
+│   │   ├── process_launcher.py    # Claude launch, wt.exe argv, Ollama framework
 │   │   └── window_manager.py      # Window tiling via Win32 API (ctypes)
 │   └── gui/
-│       ├── main_window.py         # Tab container, toolbar, Ollama health dot
-│       ├── launcher_panel.py      # Repo selection, controls, presets, launch
-│       ├── git_status_panel.py    # Status cards, batch ops, per-repo launch
+│       ├── main_window.py         # Tab container, toolbar, meters, Ollama dot
+│       ├── git_status_panel.py    # Status cards, batch ops, launches, tiling
+│       ├── project_panel.py       # Projects tab: description / plans / history
 │       ├── settings_dialog.py     # Repo management, tag editor
 │       ├── commit_confirm_dialog.py  # Diff preview before commit
-│       ├── presets_panel.py       # Preset combo bar widget
 │       ├── styles.py              # VS Code Dark+ stylesheet + status colors
 │       └── widgets/
 │           ├── log_output.py      # Timestamped colored log
-│           └── repo_status_card.py  # Status dot + details + launch button
-├── tests/                         # 24 tests (git ops, settings, window manager)
+│           ├── usage_meter.py     # Toolbar usage + commit meters
+│           └── repo_status_card.py  # Checkbox, dot, details, launch buttons
+├── tests/                         # 59 tests
 ├── docs/
 │   └── ollama-setup-guide.html    # Local LLM setup guide
 ├── claude_manager.spec            # PyInstaller config (auto-discovers src modules)
@@ -102,10 +110,12 @@ claude-manager/
 - `discover_repos()` scans the GitHub directory for git repos and registers them
 - `get_all_tags()` collects unique tags across all repos for the filter bar
 
-### Presets (`src/config/presets.py`)
+### Project Info (`src/core/project_info.py`)
 
-- **`Preset`** — named snapshot of launch configuration (enabled repos, layout, mode, model, backend, session, prompt, worktree)
-- **`PresetManager`** — CRUD for presets, persists to `%LOCALAPPDATA%/ClaudeManager/presets.json`
+- **`describe()`** — one-line description from PROJECT.md / README.md prose, falling back to `package.json` / `pyproject.toml`, then CLAUDE.md
+- **`find_plans()`** — discovers PLAN/NEXT/ROADMAP/TODO-style docs in the repo root and `docs/`, newest-modified first
+- **`sanitize_markdown()`** — strips images and raw HTML (outside code fences) so image-heavy READMEs render cleanly offline
+- **`ProjectLoadThread`** / **`DescriptionScanThread`** — per-repo detail and bulk description scans, both off the UI thread
 
 ### Repo Scanner (`src/core/repo_scanner.py`)
 
@@ -124,12 +134,13 @@ claude-manager/
 
 ### Process Launcher (`src/core/process_launcher.py`)
 
-- **Ollama integration**: `get_ollama_models()`, `get_ollama_status()`, health/test/pull workers
+- **`build_wt_command()`** — the single place `wt.exe` argv is built. Escapes `;` as `\;`, because wt splits on semicolons even inside quoted arguments and runs the tail as a subcommand (0x80070002). Every launch path goes through it
+- **`escape_prompt()`** — flattens newlines and escapes quotes for a `cmd.exe /k` argument
 - **`LaunchWorker`** — launches Claude Code instances in Windows Terminal:
   - Builds command with flags: `--permission-mode`, `--model`, `--worktree`, `--continue`/`--name`, initial prompt
-  - For local backend: prepends `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` env vars
   - Each instance gets a unique window title (`Claude-{label}-{uid}`)
   - After launching, finds windows by title and tiles them using `window_manager`
+- **Ollama framework** (no UI): `get_ollama_models()`, `get_ollama_status()`, health/test/pull workers, and `LaunchWorker`'s `backend="local"` branch. Retained for reuse elsewhere — see the KNOWN DEFECT comment in the file; the local launch path does not currently work
 
 ### Window Manager (`src/core/window_manager.py`)
 
@@ -139,24 +150,28 @@ claude-manager/
 - `find_windows_by_title()` — `EnumWindows` callback matching title substring
 - `tile_windows()` — `MoveWindow` + `SetForegroundWindow`
 
-### GUI — Launch Tab (`src/gui/launcher_panel.py`)
-
-- Repo checklist with search filter and tag pills
-- All/None select buttons
-- Controls: instance count (1-4), layout, permission mode, backend (cloud/local), model, session mode, initial prompt, worktree toggle
-- Preset management bar (save/load/delete named configs)
-- Launch button kicks off `LaunchWorker`, progress bar shows status
-
 ### GUI — Git Tab (`src/gui/git_status_panel.py`)
 
-- Status cards for every repo with colored dot, branch, change summary, last commit hash
-- **Launch button** on each card — opens Claude scoped to that repo with guardrail prompt
-- Quick-select: Select Dirty, Select Ahead
+- Status cards for every repo with a select checkbox, colored dot, branch, change summary, last commit hash
+- **Per-card launches** — Launch, Launch Auto, Agent Heavy, Agent Team, each scoped to that repo with a guardrail prompt
+- **Quick-select** — Select Dirty / Ahead / Behind tick the matching cards; Clear unticks everything
+- **Launch Tiled** — opens Claude in every ticked repo and tiles the windows (layout + model persist to settings)
+- **Auto Commit** — one Sonnet instance per dirty repo, reviews and commits autonomously
 - Batch commit with confirmation dialog (shows `git diff --stat` per repo)
 - **Push Ahead** — only pushes repos strictly ahead of remote, skips diverged/behind
 - **Fetch & Pull All** — safe sync (ff-only), never overwrites remote
+- **Check GitHub / Clone Missing** — finds and clones repos not present locally
 - Cancel button for long-running operations
 - Auto-rescans after every operation
+
+### GUI — Projects Tab (`src/gui/project_panel.py`)
+
+- Repo list with each project's auto-derived description and a plan-doc count badge; filters on name *and* description
+- **Overview** — README / PROJECT prose rendered as markdown
+- **What's Next** — picker over the repo's PLAN/NEXT/ROADMAP/TODO docs, newest first
+- **History** — recent commits as a sha / subject / age table
+- **Generate Plan** — opens Claude in plan mode to write or refresh the plan doc
+- List and scan are built lazily on first open to keep startup fast
 
 ### GUI — Settings Dialog (`src/gui/settings_dialog.py`)
 
@@ -177,16 +192,15 @@ claude-manager/
 | File | Location | Purpose |
 |------|----------|---------|
 | `settings.json` | `%LOCALAPPDATA%/ClaudeManager/` | Repos, layout, mode, geometry |
-| `presets.json` | `%LOCALAPPDATA%/ClaudeManager/` | Named launch configurations |
 | `claude_manager.log` | `%LOCALAPPDATA%/ClaudeManager/` | Rolling log (1MB, 2 backups) |
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| Ctrl+L | Launch Claude instances |
-| Ctrl+1 | Switch to Launch tab |
-| Ctrl+2 | Switch to Git tab |
+| Ctrl+L | Launch selected repos tiled |
+| Ctrl+1 | Switch to Git tab |
+| Ctrl+2 | Switch to Projects tab |
 | Ctrl+R | Refresh git status |
 | Ctrl+Enter | Commit all dirty repos |
 
