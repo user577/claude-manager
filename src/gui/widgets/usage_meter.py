@@ -166,6 +166,7 @@ class CommitMeter(QWidget):
         super().__init__(parent)
         self._goal = goal
         self._count: int | None = None
+        self._scope_warning = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -194,6 +195,21 @@ class CommitMeter(QWidget):
         return self._RED
 
     def _render(self):
+        if self._scope_warning:
+            # The count would read a misleading 0 here, so show why instead.
+            self.value.setText("!")
+            self.value.setStyleSheet(
+                f"color: #ffffff; background: {self._AMBER}; border-radius: 3px; "
+                "font-size: 12px; font-weight: bold; padding: 1px 6px;"
+            )
+            self.setToolTip(
+                "Can't read your contribution graph.\n\n"
+                "The active gh token is missing the 'read:user' scope, so "
+                "GitHub returns only your public graph — commits to private "
+                "repos count as 0.\n\n"
+                "Fix:  gh auth refresh -h github.com -s read:user"
+            )
+            return
         text = "—" if self._count is None else str(self._count)
         color = self._color()
         self.value.setText(text)
@@ -214,13 +230,20 @@ class CommitMeter(QWidget):
         self._render()
 
     def set_count(self, count: int):
-        # A negative sentinel means the fetch failed; keep the last good value
-        # rather than blanking or zeroing the meter.
+        from src.core.commit_counter import SCOPE_MISSING
+        if count == SCOPE_MISSING:
+            self._scope_warning = True
+            self._render()
+            return
+        # Any other negative sentinel means the fetch failed; keep the last
+        # good value rather than blanking or zeroing the meter.
         if count < 0:
             return
+        self._scope_warning = False
         self._count = count
         self._render()
 
     def set_unknown(self):
         self._count = None
+        self._scope_warning = False
         self._render()

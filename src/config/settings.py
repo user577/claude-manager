@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -9,6 +10,28 @@ from src.constants import CONFIG_DIR, CONFIG_FILE, DEFAULT_GITHUB_DIR
 # whose gh username is not yet known. Reconciled into the active gh account by
 # Settings.sync_accounts() once the gh CLI has been queried.
 LEGACY_USERNAME = ""
+
+
+def _norm(path: str) -> str:
+    """Absolute path normalised for comparison.
+
+    Stored paths mix separators and case (``D:/Users/...`` in a folder field,
+    ``D:\\Users\\...`` in the repo paths written beside it), so compare only
+    after ``normcase`` + ``normpath``.
+    """
+    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+
+def _is_under(path: str, folder: str) -> bool:
+    """True when ``path`` sits inside ``folder``.
+
+    ``folder`` itself is not a match — it's the container, not one of the
+    repos it holds.
+    """
+    if not folder:
+        return False
+    p, f = _norm(path), _norm(folder)
+    return p != f and p.startswith(f + os.sep)
 
 
 @dataclass
@@ -49,6 +72,10 @@ class GitHubAccount:
             "repos": [asdict(r) for r in self.repos],
         }
 
+    def owns(self, path: str) -> bool:
+        """True when ``path`` belongs to this account's folder."""
+        return _is_under(path, self.folder)
+
     def discover_repos(self) -> int:
         """Scan this account's folder for git repos. Returns count added."""
         if not self.folder:
@@ -56,15 +83,49 @@ class GitHubAccount:
         folder = Path(self.folder)
         if not folder.is_dir():
             return 0
-        known = {r.path for r in self.repos}
+        known = {_norm(r.path) for r in self.repos}
         added = 0
         for child in sorted(folder.iterdir()):
             if child.is_dir() and (child / ".git").exists():
                 p = str(child)
-                if p not in known:
+                if _norm(p) not in known:
                     self.repos.append(RepoInfo(path=p, label=child.name))
+                    known.add(_norm(p))
                     added += 1
         return added
+
+    def prune_foreign_repos(self) -> list[RepoInfo]:
+        """Drop repos that live outside this account's folder.
+
+        The folder is the single source of truth for what an account shows, so
+        anything outside it is another account's work. Entries like these
+        survive from before the per-account split, or from an "Add Folder..."
+        pointed at the wrong drive.
+
+        A folder-less account is left alone: there is nothing to scope against,
+        and pruning would silently empty its list. So is an account whose
+        folder isn't currently reachable — an unplugged drive or an offline
+        sync root must not be read as "none of these repos belong here" and
+        cost the user their list.
+        """
+        if not self.folder or not Path(self.folder).is_dir():
+            return []
+        keep: list[RepoInfo] = []
+        dropped: list[RepoInfo] = []
+        for r in self.repos:
+            (keep if self.owns(r.path) else dropped).append(r)
+        self.repos = keep
+        return dropped
+
+    def sync_repos(self) -> tuple[int, int]:
+        """Scope the repo list to this account's folder.
+
+        Prunes anything outside the folder, then discovers anything new inside
+        it. Returns ``(added, removed)``.
+        """
+        removed = self.prune_foreign_repos()
+        added = self.discover_repos()
+        return added, len(removed)
 
 
 @dataclass(init=False)
@@ -196,7 +257,7 @@ class Settings:
                     repos=legacy_repos,
                 )]
                 active_account = LEGACY_USERNAME
-            return cls(
+            s = cls(
                 accounts=accounts,
                 active_account=active_account,
                 layout=data.get("layout", "grid_2x2"),
@@ -215,6 +276,12 @@ class Settings:
                 window_width=data.get("window_width", 520),
                 window_height=data.get("window_height", 720),
             )
+            # A config written before per-account folders existed can hold
+            # repos from another account's drive. Scope every account to its
+            # own folder on load so a switch never shows a foreign repo.
+            if s.prune_all_accounts():
+                s.save()
+            return s
         except Exception:
             return cls()
 
@@ -300,6 +367,24 @@ class Settings:
         a = self.active()
         if a is not None:
             a.discover_repos()
+
+    def sync_repos(self) -> tuple[int, int]:
+        """Scope the active account's repos to its folder. ``(added, removed)``."""
+        a = self.active()
+        return a.sync_repos() if a is not None else (0, 0)
+
+    def prune_all_accounts(self) -> dict[str, list[RepoInfo]]:
+        """Scope *every* account's repo list to its own folder.
+
+        Returns ``{username: dropped}`` for the accounts that actually changed,
+        so the caller can report the cleanup and save.
+        """
+        dropped: dict[str, list[RepoInfo]] = {}
+        for a in self.accounts:
+            gone = a.prune_foreign_repos()
+            if gone:
+                dropped[a.username] = gone
+        return dropped
 
     def get_all_tags(self) -> list[str]:
         tags: set[str] = set()

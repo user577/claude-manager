@@ -201,12 +201,43 @@ def escape_prompt(text: str) -> str:
     return " ".join(text.split()).replace('"', '\\"')
 
 
+# Claude Code stamps its own session identity into the environment. If this
+# app was itself started from inside a Claude Code session (a terminal opened
+# there, or `Start-Process` from a tool call), it inherits those markers and
+# hands them to every instance it launches. The children then believe they are
+# a continuation of that parent session: CHILD_SESSION makes them skip writing
+# a transcript ("Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION
+# marker"), and the messaging pair points them at another session's IPC pipe.
+#
+# We launch *new, independent* sessions, so none of it should carry over.
+# EXECPATH and ENTRYPOINT are deliberately left alone: they describe the
+# installation rather than a specific session.
+_SESSION_MARKERS = (
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+)
+
+# Cleared inside the launched shell rather than via Popen(env=...) for the same
+# reason the agent-teams gate is set there: wt.exe may hand the tab to an
+# existing terminal broker process, which drops the environment we passed.
+#
+# No space before "&&" — `set FOO=1 && ...` stores the trailing space in the
+# value, and `set FOO= && ...` would likewise leave FOO defined as a space
+# instead of removing it.
+_SCRUB_PREFIX = "".join(f"set {name}=&& " for name in _SESSION_MARKERS)
+
+
 def build_wt_command(title: str, cwd: str, shell_cmd: str) -> list[str]:
     """Build the wt.exe argv that opens `shell_cmd` in a new titled window.
 
     wt.exe splits its command line on ";" even inside quoted arguments, then
     tries to run the tail as a separate subcommand (0x80070002), so semicolons
     are escaped ("\\;") to pass through literally.
+
+    Any inherited Claude Code session markers are cleared first, so a launched
+    instance starts as its own session no matter how this app was started.
 
     Every launch path goes through here. Hand-rolling the argv is how the
     semicolon bug survived in LaunchWorker long after the git panel fixed it.
@@ -215,7 +246,7 @@ def build_wt_command(title: str, cwd: str, shell_cmd: str) -> list[str]:
         "wt.exe", "--window", "new",
         "--title", title,
         "-d", cwd,
-        "cmd.exe", "/k", shell_cmd.replace(";", "\\;"),
+        "cmd.exe", "/k", (_SCRUB_PREFIX + shell_cmd).replace(";", "\\;"),
     ]
 
 

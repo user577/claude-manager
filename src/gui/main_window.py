@@ -269,12 +269,30 @@ class MainWindow(QMainWindow):
             self._apply_active_account()
 
     def _apply_active_account(self):
-        """Rebuild the Launch/Git views for the current active account."""
+        """Rebuild the Launch/Git views for the current active account.
+
+        The account's folder is the only thing that decides which repos show,
+        so re-scope before rebuilding: anything left over from another
+        account's drive is dropped, and anything new in this folder is picked
+        up.
+        """
         acct = self.settings.active()
         if acct is not None and not acct.folder:
             self.git_panel.log.log_info(
                 f"No folder set for {acct.username or 'this account'} — "
                 "open Settings to choose one."
+            )
+        added, removed = self.settings.sync_repos()
+        if added or removed:
+            self.settings.save()
+        if removed:
+            self.git_panel.log.log_info(
+                f"Dropped {removed} repo(s) outside "
+                f"{acct.folder if acct else 'this account'}"
+            )
+        if acct is not None and acct.folder:
+            self.git_panel.log.log_info(
+                f"Showing {len(acct.repos)} repo(s) from {acct.folder}"
             )
         self.git_panel._build_cards()
         self.project_panel.refresh_repos()

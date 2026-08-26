@@ -177,3 +177,133 @@ def test_per_account_repos_are_isolated():
     s.active_account = "acct2"
     assert [r.label for r in s.repos] == ["y"]
     assert s.github_dir == "/b"
+
+
+# --- Folder scoping ---------------------------------------------------------
+
+
+def _mkrepo(parent: Path, name: str) -> Path:
+    """Create a directory that looks like a git repo to the scanner."""
+    d = parent / name
+    (d / ".git").mkdir(parents=True)
+    return d
+
+
+def test_prune_drops_repos_outside_the_account_folder(tmp_path):
+    mine = tmp_path / "mine"
+    theirs = tmp_path / "theirs"
+    _mkrepo(mine, "keep")
+    _mkrepo(theirs, "foreign")
+    acct = GitHubAccount(username="user577", folder=str(mine), repos=[
+        RepoInfo(path=str(mine / "keep"), label="keep"),
+        RepoInfo(path=str(theirs / "foreign"), label="foreign"),
+    ])
+    dropped = acct.prune_foreign_repos()
+    assert [r.label for r in dropped] == ["foreign"]
+    assert [r.label for r in acct.repos] == ["keep"]
+
+
+def test_prune_normalises_separators_and_case(tmp_path):
+    """Config mixes 'D:/x' folders with 'D:\\x' repo paths — both must match."""
+    mine = tmp_path / "mine"
+    _mkrepo(mine, "keep")
+    acct = GitHubAccount(
+        username="u",
+        folder=str(mine).replace("\\", "/"),
+        repos=[RepoInfo(path=str(mine / "keep").replace("/", "\\"), label="keep")],
+    )
+    assert acct.prune_foreign_repos() == []
+    assert [r.label for r in acct.repos] == ["keep"]
+
+
+def test_prune_keeps_everything_when_folder_is_unreachable(tmp_path):
+    """An unplugged drive must not be read as 'none of these belong here'."""
+    acct = GitHubAccount(
+        username="u",
+        folder=str(tmp_path / "does-not-exist"),
+        repos=[RepoInfo(path="/somewhere/else", label="x")],
+    )
+    assert acct.prune_foreign_repos() == []
+    assert [r.label for r in acct.repos] == ["x"]
+
+
+def test_prune_keeps_everything_when_no_folder_set():
+    acct = GitHubAccount(username="u", folder="",
+                         repos=[RepoInfo(path="/x", label="x")])
+    assert acct.prune_foreign_repos() == []
+    assert [r.label for r in acct.repos] == ["x"]
+
+
+def test_folder_itself_is_not_one_of_its_repos(tmp_path):
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    acct = GitHubAccount(username="u", folder=str(mine),
+                         repos=[RepoInfo(path=str(mine), label="self")])
+    assert [r.label for r in acct.prune_foreign_repos()] == ["self"]
+    assert acct.repos == []
+
+
+def test_sync_repos_prunes_and_discovers(tmp_path):
+    mine = tmp_path / "mine"
+    theirs = tmp_path / "theirs"
+    _mkrepo(mine, "known")
+    _mkrepo(mine, "brand-new")
+    _mkrepo(theirs, "foreign")
+    acct = GitHubAccount(username="u", folder=str(mine), repos=[
+        RepoInfo(path=str(mine / "known"), label="known"),
+        RepoInfo(path=str(theirs / "foreign"), label="foreign"),
+    ])
+    added, removed = acct.sync_repos()
+    assert (added, removed) == (1, 1)
+    assert sorted(r.label for r in acct.repos) == ["brand-new", "known"]
+
+
+def test_switching_account_shows_only_that_folder(tmp_path):
+    """The explicit guarantee: a switch never surfaces the other account's repos."""
+    personal = tmp_path / "personal"
+    work = tmp_path / "work"
+    _mkrepo(personal, "hobby")
+    _mkrepo(work, "job")
+    s = Settings(accounts=[
+        GitHubAccount(username="personal", folder=str(personal), repos=[
+            RepoInfo(path=str(personal / "hobby"), label="hobby"),
+            # Leaked in before the per-account split.
+            RepoInfo(path=str(work / "job"), label="job"),
+        ]),
+        GitHubAccount(username="work", folder=str(work), repos=[
+            RepoInfo(path=str(work / "job"), label="job"),
+        ]),
+    ], active_account="personal")
+
+    assert s.sync_repos() == (0, 1)
+    assert [r.label for r in s.repos] == ["hobby"]
+
+    s.active_account = "work"
+    assert s.sync_repos() == (0, 0)
+    assert [r.label for r in s.repos] == ["job"]
+
+
+def test_load_scopes_every_account_not_just_the_active_one(tmp_path):
+    personal = tmp_path / "personal"
+    work = tmp_path / "work"
+    _mkrepo(personal, "hobby")
+    _mkrepo(work, "job")
+    config_file = tmp_path / "settings.json"
+    with patch("src.config.settings.CONFIG_FILE", config_file), \
+         patch("src.config.settings.CONFIG_DIR", tmp_path):
+        Settings(accounts=[
+            GitHubAccount(username="personal", folder=str(personal), repos=[
+                RepoInfo(path=str(personal / "hobby"), label="hobby"),
+                RepoInfo(path=str(work / "job"), label="job"),
+            ]),
+            GitHubAccount(username="work", folder=str(work), repos=[
+                RepoInfo(path=str(personal / "hobby"), label="hobby"),
+            ]),
+        ], active_account="personal").save()
+
+        s = Settings.load()
+        by_name = {a.username: [r.label for r in a.repos] for a in s.accounts}
+        assert by_name == {"personal": ["hobby"], "work": []}
+        # The cleanup is persisted, not just applied in memory.
+        data = json.loads(config_file.read_text(encoding="utf-8"))
+        assert [len(a["repos"]) for a in data["accounts"]] == [1, 0]
