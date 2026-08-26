@@ -236,7 +236,7 @@ fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 uv run pytest
 ```
 
-72 tests covering git operations (.pyc cleanup, run_git wrapper), settings (save/load, discovery, dedup, per-account folder scoping), commit-counter scope detection, and window manager (layout calculations, edge cases).
+77 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency sort, card selection, and commit-counter scope detection.
 
 ## Dependencies
 
