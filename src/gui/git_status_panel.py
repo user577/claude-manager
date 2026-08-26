@@ -375,14 +375,18 @@ class GitStatusPanel(QWidget):
     def scan_all(self, fetch: bool = False):
         self.refresh_btn.setEnabled(False)
         self.fetch_refresh_btn.setEnabled(False)
-        # Pick up new folders added to github_dir since last load
-        before = len(self.settings.repos)
-        self.settings.discover_repos()
-        added = len(self.settings.repos) - before
-        if added:
+        # Pick up new folders added to github_dir since last load, and drop any
+        # that no longer belong to this account's folder.
+        added, removed = self.settings.sync_repos()
+        if added or removed:
             self.settings.save()
             self._refresh_tag_bar()
-            self.log.log_info(f"Discovered {added} new repo(s)")
+            if added:
+                self.log.log_info(f"Discovered {added} new repo(s)")
+            if removed:
+                self.log.log_info(
+                    f"Dropped {removed} repo(s) outside this account's folder"
+                )
         self._scan_count = 0
         self._scan_total = len(self.settings.repos)
         prefix = "Fetching" if fetch else "Scanning"

@@ -154,14 +154,24 @@ class SettingsDialog(QDialog):
         if not d:
             return
         p = Path(d)
-        if (p / ".git").exists():
-            active.repos.append(RepoInfo(path=str(p), label=p.name))
-            self._reload_repo_list()
-        else:
+        if not (p / ".git").exists():
             QMessageBox.warning(
                 self, "Not a Git Repo",
                 f"{d} does not contain a .git directory.",
             )
+            return
+        # An account only ever shows repos from its own folder, so adding one
+        # from elsewhere would just be pruned again on the next scan.
+        if active.folder and not active.owns(str(p)):
+            QMessageBox.warning(
+                self, "Outside This Account's Folder",
+                f"{d}\n\nis not inside {active.folder}.\n\n"
+                f"Each account only shows repos from its own folder. Add this "
+                f"repo under that folder, or switch to the account that owns it.",
+            )
+            return
+        active.repos.append(RepoInfo(path=str(p), label=p.name))
+        self._reload_repo_list()
 
     def _remove_selected(self):
         row = self.repo_list.currentRow()
@@ -178,14 +188,17 @@ class SettingsDialog(QDialog):
         edit = self.folder_edits.get(active.username)
         if edit is not None:
             active.folder = edit.text().strip()
-        old = len(active.repos)
-        active.discover_repos()
+        added, removed = active.sync_repos()
         self._reload_repo_list()
-        added = len(active.repos) - old
-        if added > 0:
-            self.setWindowTitle(f"Settings — discovered {added} new repos")
-        elif not active.folder:
+        if not active.folder:
             self.setWindowTitle("Settings — set a folder first")
+        elif added or removed:
+            bits = []
+            if added:
+                bits.append(f"discovered {added}")
+            if removed:
+                bits.append(f"dropped {removed} outside the folder")
+            self.setWindowTitle(f"Settings — {', '.join(bits)}")
 
     def _on_repo_selected(self, row: int):
         repos = self.settings.repos

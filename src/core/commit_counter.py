@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import re
 import subprocess
 
 from PySide6.QtCore import QThread, Signal
@@ -28,6 +29,18 @@ from PySide6.QtCore import QThread, Signal
 # subprocess.CREATE_NO_WINDOW is Windows-only; keep the app from flashing a
 # console window when it shells out to gh.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# Sentinels emitted by CommitCountWorker in place of a real count.
+FETCH_FAILED = -1
+SCOPE_MISSING = -2
+
+# The scope GitHub requires before the contributions calendar includes private
+# repositories. Without it the API still answers 200 — it just returns the
+# public graph, which reads as a flat 0 for an all-private account.
+CONTRIB_SCOPE = "read:user"
+
+_ACTIVE_RE = re.compile(r"Active account:\s*true", re.IGNORECASE)
+_SCOPES_RE = re.compile(r"Token scopes:\s*(.+)")
 
 # The contributions calendar buckets days in the account's own timezone, so we
 # ask for a small window around "now" and then pick the day whose date matches
@@ -43,6 +56,41 @@ query($from: DateTime!, $to: DateTime!) {
   }
 }
 """
+
+
+def active_token_scopes() -> set[str] | None:
+    """Scopes carried by the active ``gh`` token, or None if unreadable."""
+    try:
+        r = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = r.stdout + "\n" + r.stderr
+    # gh prints one block per logged-in account; pick the active one.
+    blocks = re.split(r"(?=Logged in to )", out)
+    block = next((b for b in blocks if _ACTIVE_RE.search(b)), None)
+    if block is None:
+        return None
+    m = _SCOPES_RE.search(block)
+    if not m:
+        return None
+    return {s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()}
+
+
+def missing_contribution_scope() -> bool:
+    """True when the active token can only see the *public* contribution graph.
+
+    An account whose repos are all private then reads a flat 0 every day, which
+    looks like "no commits" rather than "can't see them". Returns False when the
+    scopes can't be determined — better to show a count than to cry wolf.
+    """
+    scopes = active_token_scopes()
+    if scopes is None:
+        return False
+    return CONTRIB_SCOPE not in scopes
 
 
 def github_contributions_today() -> int | None:
@@ -87,8 +135,9 @@ def github_contributions_today() -> int | None:
 class CommitCountWorker(QThread):
     """Fetches today's GitHub contribution count off the UI thread.
 
-    Emits ``result`` with the count, or ``-1`` when the fetch fails so the
-    meter can keep its last good value instead of dropping to zero.
+    Emits ``result`` with the count, ``FETCH_FAILED`` when the fetch fails (so
+    the meter keeps its last good value instead of dropping to zero), or
+    ``SCOPE_MISSING`` when the token can't see private contributions at all.
     """
 
     result = Signal(int)
@@ -101,7 +150,13 @@ class CommitCountWorker(QThread):
         self._cancelled = True
 
     def run(self):
+        # Check the scope first: without it the query still succeeds and
+        # returns 0, which would silently overwrite a good reading.
+        if missing_contribution_scope():
+            if not self._cancelled:
+                self.result.emit(SCOPE_MISSING)
+            return
         count = github_contributions_today()
         if self._cancelled:
             return
-        self.result.emit(count if count is not None else -1)
+        self.result.emit(count if count is not None else FETCH_FAILED)

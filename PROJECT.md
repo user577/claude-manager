@@ -106,9 +106,21 @@ claude-manager/
 ### Settings (`src/config/settings.py`)
 
 - **`RepoInfo`** — path, label, enabled, tags list. `exists()` checks for `.git` dir
+- **`GitHubAccount`** — a gh username paired with the one folder that defines its workspace, plus that folder's repos
 - **`Settings`** — full app state as a dataclass. Loads/saves JSON at `%LOCALAPPDATA%/ClaudeManager/settings.json`
 - `discover_repos()` scans the GitHub directory for git repos and registers them
 - `get_all_tags()` collects unique tags across all repos for the filter bar
+
+**Folder scoping** — an account's folder is the single source of truth for what it
+shows. `prune_foreign_repos()` drops anything outside it, `sync_repos()` prunes then
+discovers, and `prune_all_accounts()` scopes every account (run on `load()`, so an
+old config is cleaned once and saved). This is what keeps personal and work repos on
+separate drives from bleeding into each other on an account switch.
+
+Two deliberate exceptions, both to avoid destroying a repo list by accident: an
+account with **no folder set** is never pruned, and neither is one whose folder is
+**currently unreachable** — an unplugged drive or offline sync root must not be read
+as "none of these repos belong here".
 
 ### Project Info (`src/core/project_info.py`)
 
@@ -135,6 +147,7 @@ claude-manager/
 ### Process Launcher (`src/core/process_launcher.py`)
 
 - **`build_wt_command()`** — the single place `wt.exe` argv is built. Escapes `;` as `\;`, because wt splits on semicolons even inside quoted arguments and runs the tail as a subcommand (0x80070002). Every launch path goes through it
+- **Inherited-session scrub** — `build_wt_command()` prefixes `set CLAUDE_CODE_CHILD_SESSION=&& …` to clear the parent's session markers (`CHILD_SESSION`, `SESSION_ID`, `MESSAGING_SOCKET`, `MESSAGING_TOKEN`). If the app is started from inside a Claude Code session it inherits those, and every instance it launches then believes it is a continuation of that session — silently skipping transcript saving and pointing at another session's IPC pipe. Cleared *inside the shell*, not via `Popen(env=...)`, because wt.exe may hand the tab to an existing terminal broker that drops the passed environment. `EXECPATH`/`ENTRYPOINT` are left alone: they describe the install, not a session
 - **`escape_prompt()`** — flattens newlines and escapes quotes for a `cmd.exe /k` argument
 - **`LaunchWorker`** — launches Claude Code instances in Windows Terminal:
   - Builds command with flags: `--permission-mode`, `--model`, `--worktree`, `--continue`/`--name`, initial prompt
@@ -175,9 +188,22 @@ claude-manager/
 
 ### GUI — Settings Dialog (`src/gui/settings_dialog.py`)
 
-- GitHub directory path selector
-- Repo list with Add Folder / Remove / Auto-Discover
+- One folder row per GitHub account
+- Repo list for the active account, with Add Folder / Remove / Auto-Discover
+- Add Folder refuses a repo outside the active account's folder — it would only be pruned again on the next scan
 - Per-repo tag editor (comma-separated)
+- Daily commit goal
+
+### Commit Counter (`src/core/commit_counter.py`)
+
+Reads *today* from the active account's GitHub contribution graph via `gh api graphql`,
+rather than counting local git — unpushed work, feature branches, squash-merges and
+stale remote-tracking refs make a local count diverge from the graph by 100+/day.
+
+**`read:user` is required.** Without it the API still answers 200 but returns only the
+*public* graph, so an account whose repos are all private reads a flat `0` every day.
+`missing_contribution_scope()` detects this and the meter shows an amber `!` with the
+fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 
 ## Safety Guarantees
 
@@ -210,7 +236,7 @@ claude-manager/
 uv run pytest
 ```
 
-24 tests covering git operations (.pyc cleanup, run_git wrapper), settings (save/load, discovery, dedup), and window manager (layout calculations, edge cases).
+72 tests covering git operations (.pyc cleanup, run_git wrapper), settings (save/load, discovery, dedup, per-account folder scoping), commit-counter scope detection, and window manager (layout calculations, edge cases).
 
 ## Dependencies
 
