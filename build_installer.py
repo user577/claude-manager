@@ -1,6 +1,7 @@
 """One-click build: clean .pyc -> PyInstaller -> Inno Setup."""
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -65,13 +66,64 @@ def clean_pyc():
     print(f"  Removed {removed} items")
 
 
+def _clear_readonly(func, path, _exc_info):
+    """rmtree error handler: drop the read-only bit and retry.
+
+    Windows refuses to unlink a read-only file, and DLLs copied out of a Qt or
+    system directory keep that bit. One such leftover in dist/ is enough to
+    abort every later build, so clear it rather than fail the clean.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
 def clean_build():
     print("=== Cleaning build artifacts ===")
     for d in ["build", "dist", "Output"]:
         p = ROOT / d
         if p.exists():
-            shutil.rmtree(p)
+            shutil.rmtree(p, onerror=_clear_readonly)
             print(f"  Removed {d}/")
+
+
+def _is_openssl_dll(name):
+    n = name.lower()
+    return n.startswith(("libcrypto-", "libssl-")) and n.endswith(".dll")
+
+
+def openssl_clean_env():
+    """Drop PATH entries carrying an OpenSSL that is not this interpreter's.
+
+    PyInstaller resolves libcrypto/libssl by walking PATH, so a stray copy gets
+    bundled ahead of the pair sitting next to _ssl.pyd, and the spec's fixup
+    then hard-fails the build. Two such copies show up routinely here: Git's
+    mingw64 build (on PATH in any Git Bash shell) and — self-inflicted — a
+    previously installed ClaudeManager, whose _internal directory is added to
+    the user PATH and still holds whatever a past build bundled. That second
+    one makes the failure loop: ship a bad OpenSSL once and every later build
+    picks it back up.
+
+    Filtering here rather than relying on whoever invokes the build to have a
+    clean shell. The spec still hard-fails if anything slips through.
+    """
+    dlls = (Path(sys.base_prefix) / "DLLs").resolve()
+    kept, dropped = [], []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            shadows = Path(entry).resolve() != dlls and any(
+                _is_openssl_dll(p.name) for p in Path(entry).glob("*.dll")
+            )
+        except OSError:
+            shadows = False
+        (dropped if shadows else kept).append(entry)
+
+    if dropped:
+        print("  Dropped from PATH (shadowing OpenSSL):")
+        for entry in dropped:
+            print(f"    {entry}")
+    return {**os.environ, "PATH": os.pathsep.join(kept)}
 
 
 def build_pyinstaller():
@@ -79,6 +131,7 @@ def build_pyinstaller():
     r = subprocess.run(
         [sys.executable, "-m", "PyInstaller", "claude_manager.spec", "-y"],
         cwd=ROOT,
+        env=openssl_clean_env(),
     )
     if r.returncode != 0:
         print("PyInstaller FAILED")
