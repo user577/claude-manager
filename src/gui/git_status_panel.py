@@ -15,6 +15,9 @@ from src.core.process_launcher import (
     LaunchWorker, build_wt_command, escape_prompt,
 )
 from src.core.agent_ladder import ensure_ladder, SIZING_POLICY, TEAM_POLICY
+from src.core.new_project import (
+    create_blank_repo, apply_pending_renames, NEW_PROJECT_PROMPT,
+)
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
 from src.gui.commit_confirm_dialog import CommitConfirmDialog
