@@ -1,0 +1,163 @@
+"""Create a blank repo under the active account's folder and let the Claude
+session that opens in it choose the real name.
+
+Why the two-step rename: the app starts Claude inside the new folder, and on
+Windows a directory cannot be renamed while any process has it as its working
+directory. Both the Claude process and its cmd.exe host sit there, so Claude
+cannot rename its own repo. Instead it writes the chosen name to a marker
+file; the git panel picks that up on the next Refresh and does the rename
+once the window is closed.
+"""
+
+import os
+import re
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+from src.config.settings import RepoInfo
+
+PLACEHOLDER_PREFIX = "new-project-"
+
+# Repo-root file holding the folder name Claude settled on. Excluded from
+# the repo via .git/info/exclude at init so it never lands in a commit.
+RENAME_MARKER = ".claude-manager-rename"
+
+# Characters Windows refuses in a file name, plus path separators.
+_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+NEW_PROJECT_PROMPT = (
+    "This is a brand-new, empty git repository that claude-manager just "
+    "created for you with the placeholder folder name {name}. Your first job "
+    "is to name it and scaffold it. Procedure: (1) Ask the user what they "
+    "want to build and wait for the answer; do nothing else first. (2) Pick a "
+    "short kebab-case folder name from their description, or use the name "
+    "they give you, and confirm it in one line. (3) Write that name, and "
+    "nothing else, as the single line of a file called " + RENAME_MARKER +
+    " in the repo root. It is already excluded via .git/info/exclude, so "
+    "never stage or commit it. (4) Scaffold the project: a README.md whose "
+    "title is the chosen name, plus whatever starter structure fits what they "
+    "described, then make an initial commit. Do not push. (5) Tell the user "
+    "that claude-manager will rename the folder to the chosen name the next "
+    "time they click Refresh, and that they must close this Claude window "
+    "first because Windows locks a folder while a process is running inside "
+    "it. Never try to rename or move the folder yourself, and never run "
+    "git init again."
+)
+
+
+def sanitize_name(raw: str) -> str | None:
+    """Return a safe folder name, or None if ``raw`` can't be one.
+
+    Rejects anything that would escape the account folder (separators,
+    ``..``), Windows-illegal characters, and empty/whitespace-only input.
+    Case and hyphens are left as written so the name matches what Claude
+    told the user.
+    """
+    name = raw.strip().strip(".")
+    if not name or _BAD_CHARS.search(name):
+        return None
+    if name in {".", ".."}:
+        return None
+    return name
+
+
+def create_blank_repo(folder: str) -> str:
+    """Make ``<folder>/new-project-<stamp>``, ``git init`` it, and return the path.
+
+    The marker is added to ``.git/info/exclude`` right away so the Claude
+    session can write it without it ever showing up in ``git status``.
+    """
+    root = Path(folder)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Account folder not found: {folder}")
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = root / f"{PLACEHOLDER_PREFIX}{stamp}"
+    n = 1
+    while target.exists():
+        n += 1
+        target = root / f"{PLACEHOLDER_PREFIX}{stamp}-{n}"
+    target.mkdir()
+
+    proc = subprocess.run(
+        ["git", "init"], cwd=str(target),
+        capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git init failed: {proc.stderr.strip()}")
+
+    info = target / ".git" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    with (info / "exclude").open("a", encoding="utf-8") as fh:
+        fh.write(f"\n/{RENAME_MARKER}\n")
+    return str(target)
+
+
+def pending_rename(repo_path: str) -> str | None:
+    """The sanitized name from the repo's marker file, or None if absent."""
+    marker = Path(repo_path) / RENAME_MARKER
+    if not marker.is_file():
+        return None
+    try:
+        first = marker.read_text(encoding="utf-8").strip().splitlines()
+    except OSError:
+        return None
+    return sanitize_name(first[0]) if first else None
+
+
+def apply_pending_renames(
+    repos: list[RepoInfo],
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Rename every repo that has a marker file, updating its RepoInfo in place.
+
+    Returns ``(renamed, problems)``: ``renamed`` is ``(old_path, new_path)``
+    pairs; ``problems`` are human-readable reasons a rename was skipped. A
+    locked folder (the Claude window is still open) is reported, not raised,
+    so a Refresh never fails because of it.
+    """
+    renamed: list[tuple[str, str]] = []
+    problems: list[str] = []
+    for repo in repos:
+        marker = Path(repo.path) / RENAME_MARKER
+        if not marker.is_file():
+            continue
+        name = pending_rename(repo.path)
+        if name is None:
+            problems.append(
+                f"{repo.label}: rename marker holds an invalid folder name"
+            )
+            continue
+        old = Path(repo.path)
+        new = old.parent / name
+        if os.path.normcase(str(new)) == os.path.normcase(str(old)):
+            # Already called that; nothing to do but clear the marker.
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+            continue
+        if new.exists():
+            problems.append(
+                f"{repo.label}: can't rename to {name}, that folder already exists"
+            )
+            continue
+        try:
+            old.rename(new)
+        except PermissionError:
+            problems.append(
+                f"{repo.label}: folder is in use, close its Claude window and "
+                f"Refresh again to rename it to {name}"
+            )
+            continue
+        except OSError as e:
+            problems.append(f"{repo.label}: rename failed ({e})")
+            continue
+        try:
+            (new / RENAME_MARKER).unlink()
+        except OSError:
+            pass
+        repo.path = str(new)
+        repo.label = name
+        renamed.append((str(old), str(new)))
+    return renamed, problems
