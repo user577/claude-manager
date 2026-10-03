@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QScrollArea, QFrame, QProgressBar, QComboBox, QMessageBox,
+    QScrollArea, QFrame, QProgressBar, QComboBox, QMessageBox, QInputDialog,
 )
 
 from src.config.settings import Settings, RepoInfo
@@ -19,7 +19,7 @@ from src.core.process_launcher import (
 )
 from src.core.agent_ladder import ensure_ladder, SIZING_POLICY, TEAM_POLICY
 from src.core.new_project import (
-    create_blank_repo, apply_pending_renames, NEW_PROJECT_PROMPT,
+    create_blank_repo, apply_pending_renames, new_project_prompt,
 )
 from src.gui.widgets.repo_status_card import RepoStatusCard
 from src.gui.widgets.log_output import LogOutput
@@ -128,6 +128,15 @@ class GitStatusPanel(QWidget):
         self.scan_label = QLabel("")
         self.scan_label.setStyleSheet("color: #6e6e6e; font-size: 11px;")
         top_row.addWidget(self.scan_label)
+
+        self.new_project_btn = QPushButton("New Project")
+        self.new_project_btn.setObjectName("launchBtn")
+        self.new_project_btn.setToolTip(
+            "Create a blank repo and open Claude in it to interview you about "
+            "the project, then name, plan, and scaffold it"
+        )
+        self.new_project_btn.clicked.connect(self._on_new_project)
+        top_row.addWidget(self.new_project_btn)
 
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setToolTip("Fast local rescan (uses cached fetch state)")
@@ -408,9 +417,20 @@ class GitStatusPanel(QWidget):
     def scan_all(self, fetch: bool = False):
         self.refresh_btn.setEnabled(False)
         self.fetch_refresh_btn.setEnabled(False)
+        # New projects get their real name here: their Claude session left it
+        # in a marker file, and the folder can only be renamed once that
+        # window is closed. Runs before sync_repos so the renamed folder is
+        # matched to its updated RepoInfo instead of rediscovered.
+        renamed, problems = apply_pending_renames(self.settings.repos)
+        for old, new in renamed:
+            self.log.log_ok(f"Renamed {Path(old).name} → {Path(new).name}")
+        for problem in problems:
+            self.log.log_info(problem)
         # Pick up new folders added to github_dir since last load, and drop any
         # that no longer belong to this account's folder.
         added, removed = self.settings.sync_repos()
+        if renamed and not (added or removed):
+            self.settings.save()
         if added or removed:
             self.settings.save()
             self._refresh_tag_bar()
@@ -915,6 +935,44 @@ class GitStatusPanel(QWidget):
         self._clone_worker = None
         self._build_cards()
         self.scan_all()
+
+    def _on_new_project(self):
+        """Create a blank repo and open Claude in it to interview and kick off.
+
+        The interview happens inside the Claude session (AskUserQuestion
+        rounds), not in a form here, so it can adapt to each answer.
+        """
+        idea, ok = QInputDialog.getText(
+            self, "New Project",
+            "What do you want to build? (optional; Claude will interview "
+            "you either way)",
+        )
+        if not ok:
+            return
+        try:
+            path = create_blank_repo(self.settings.github_dir)
+        except Exception as e:
+            self.log.log_err(f"Couldn't create the project folder: {e}")
+            return
+        label = Path(path).name
+        self.settings.repos.append(RepoInfo(path=path, label=label))
+        self.settings.save()
+        self.log.log_ok(f"Created {label}; Claude will name it during kickoff")
+        self.scan_all()
+
+        uid = uuid.uuid4().hex[:8]
+        escaped = self._escape_prompt(
+            self._guardrail(path) + " " + new_project_prompt(label, idea)
+        )
+        # acceptEdits: scaffolding writes many files into an empty repo, so
+        # edits go through unprompted while shell commands (gh repo create,
+        # installs) still ask. Straight to _spawn_now: a fresh `git init` has
+        # no remote, so there's nothing for the sync gate to check.
+        self._spawn_now(
+            f"Claude-{label}-{uid}", path,
+            f'claude --permission-mode acceptEdits "{escaped}"',
+            "new project", label,
+        )
 
     def _launch_single(self, repo_path: str):
         """Launch a single Claude instance scoped to the given repo."""
