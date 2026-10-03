@@ -144,6 +144,9 @@ class GitWorker(QThread):
                 ok, out = push_repo(path)
             elif self.operation == "fetch_pull":
                 ok, out = fetch_and_pull_repo(path)
+            elif self.operation == "pull":
+                # For callers that just fetched (the pre-launch sync gate).
+                ok, out = pull_repo(path)
             else:
                 ok, out = False, f"Unknown operation: {self.operation}"
 
