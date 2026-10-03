@@ -14,6 +14,7 @@ Two tabs: **Git** (status, batch operations, launching) and **Projects** (descri
 - **Batch git operations** — commit, push (ahead-only), fetch+pull (ff-only) with .pyc cleanup
 - **Per-repo Claude launch** — Launch, Launch Auto, Agent Heavy (subagent ladder), and Agent Team on every repo card
 - **Remote-sync gate on every launch** — each launch (card buttons, Launch Tiled, Auto Commit, Generate Plan) fetches first; if a repo is behind or diverged, a prompt offers Pull & Launch (ff-only), Launch Anyway, or Cancel
+- **New Project interview** — the New Project button creates a blank repo and opens Claude there to interview you (AskUserQuestion rounds: goal, users, first-version scope, stack, constraints, GitHub repo), confirm a brief, then name it, write README.md + PLAN.md, scaffold, and commit; optionally `gh repo create`. The folder takes its chosen name on the next Refresh after the window closes
 - **Tiled multi-launch** — tick any set of repos and open them all at once, auto-tiled (2x2 grid, vertical, horizontal, single)
 - **Auto Commit** — spawn a Sonnet instance per dirty repo to review changes and commit autonomously
 - **Projects tab** — browse every repo's auto-derived description, its PLAN/NEXT/ROADMAP/TODO docs, and its commit history
@@ -72,6 +73,7 @@ claude-manager/
 │   │   ├── project_info.py        # Descriptions, plan docs, commit history
 │   │   ├── agent_ladder.py        # Haiku->Sonnet->Opus->Fable subagent defs
 │   │   ├── commit_counter.py      # Daily commits (GitHub contribution graph)
+│   │   ├── new_project.py         # Blank repo, interview prompt, deferred rename
 │   │   ├── usage_tracker.py       # Live 5h/7d usage limits
 │   │   ├── github_accounts.py     # gh CLI account listing / switching
 │   │   ├── process_launcher.py    # Claude launch, wt.exe argv, Ollama framework
@@ -87,7 +89,7 @@ claude-manager/
 │           ├── log_output.py      # Timestamped colored log
 │           ├── usage_meter.py     # Toolbar usage + commit meters
 │           └── repo_status_card.py  # Checkbox, dot, details, launch buttons
-├── tests/                         # 102 tests
+├── tests/                         # 125 tests
 ├── docs/
 │   └── ollama-setup-guide.html    # Local LLM setup guide
 ├── claude_manager.spec            # PyInstaller config (auto-discovers src modules)
@@ -238,7 +240,7 @@ fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 uv run pytest
 ```
 
-102 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency sort, card selection, commit-counter scope detection, and the pre-launch sync gate (classification, prompt text, remote-URL parsing, the offline fast path, and a real-git fetch → pull → launch run).
+125 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency sort, card selection, commit-counter scope detection, and the pre-launch sync gate (classification, prompt text, remote-URL parsing, the offline fast path, and a real-git fetch → pull → launch run), and new-project kickoff (cmd-safe prompt, folder naming, deferred rename, the button end to end).
 
 ## Dependencies
 
