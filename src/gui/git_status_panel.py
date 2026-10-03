@@ -9,7 +9,10 @@ from PySide6.QtWidgets import (
 )
 
 from src.config.settings import Settings, RepoInfo
-from src.core.repo_scanner import RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo
+from src.core.repo_scanner import (
+    RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo,
+    SyncCheckThread, SyncReport, classify_sync,
+)
 from src.core.git_operations import GitWorker, CloneWorker
 from src.core.process_launcher import (
     LaunchWorker, build_wt_command, escape_prompt,
@@ -74,6 +77,26 @@ def _urgency_rank(status) -> int:
     return UNSCANNED_RANK
 
 
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def sync_prompt_lines(report: SyncReport) -> list[str]:
+    """One line per out-of-sync repo for the pre-launch dialog. Pure for tests."""
+    lines = []
+    for s in report.behind:
+        line = f"• {s.label}: {_plural(s.behind, 'commit')} behind remote"
+        if s.modified_count:
+            line += " (has local changes — the pull stops if they conflict)"
+        lines.append(line)
+    for s in report.diverged:
+        lines.append(
+            f"• {s.label}: diverged ({s.ahead} ahead, {s.behind} behind) — "
+            "needs a manual merge or rebase, won't be pulled"
+        )
+    return lines
+
+
 class GitStatusPanel(QWidget):
     # Emitted after a git operation finishes (commit/push/pull) so the toolbar
     # commit meter can refresh without polling.
@@ -86,6 +109,11 @@ class GitStatusPanel(QWidget):
         self._git_worker = None
         self._tile_worker = None
         self._statuses: dict[str, RepoStatus] = {}
+        # Pre-launch sync gate: in-flight check/pull/rescan threads (held so
+        # they aren't collected mid-run) and the repo paths they cover, so a
+        # double-clicked Launch doesn't stack two prompts for one repo.
+        self._gate_workers: set = set()
+        self._gate_paths: set[str] = set()
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -374,6 +402,8 @@ class GitStatusPanel(QWidget):
         for attr in ("_scanner", "_git_worker", "_gh_sync", "_clone_worker",
                      "_auto_commit_worker", "_tile_worker"):
             stop_worker(getattr(self, attr, None))
+        for worker in list(self._gate_workers):
+            stop_worker(worker)
 
     def scan_all(self, fetch: bool = False):
         self.refresh_btn.setEnabled(False)
@@ -608,6 +638,13 @@ class GitStatusPanel(QWidget):
                 "the rest open untiled"
             )
 
+        self.launch_tiled_btn.setEnabled(False)
+        self._gate_launch(
+            repos, lambda: self._start_tiled(repos, layout_key),
+            on_cancel=self._on_selection_changed,
+        )
+
+    def _start_tiled(self, repos, layout_key: str):
         self.log.log_info(f"Launching {len(repos)} tiled instance(s)...")
         self.launch_tiled_btn.setEnabled(False)
         self._tile_worker = LaunchWorker(
@@ -687,6 +724,10 @@ class GitStatusPanel(QWidget):
     def _on_repo_done(self, label: str, operation: str, success: bool, output: str):
         self._op_count += 1
         self.progress.setValue(self._op_count)
+        self._on_repo_done_log(label, operation, success, output)
+
+    def _on_repo_done_log(self, label: str, operation: str, success: bool,
+                          output: str):
         short = output.split("\n")[0][:120] if output else ""
         if success:
             self.log.log_ok(f"[{operation}] {label}: {short}")
@@ -895,12 +936,170 @@ class GitStatusPanel(QWidget):
 
     def _spawn_claude_window(self, title: str, cwd: str, claude_cmd: str,
                              mode: str, repo_label: str):
-        """Open a new Windows Terminal window running claude_cmd via cmd.exe /k."""
+        """Open a new Windows Terminal window running claude_cmd via cmd.exe /k.
+
+        Every single-repo launch funnels through here (including the Projects
+        tab's Generate Plan), so this is where the remote-sync gate sits.
+        """
+        repo = next((r for r in self.settings.repos if r.path == cwd),
+                    RepoInfo(path=cwd, label=repo_label))
+        self._gate_launch(
+            [repo],
+            lambda: self._spawn_now(title, cwd, claude_cmd, mode, repo_label),
+        )
+
+    def _spawn_now(self, title: str, cwd: str, claude_cmd: str,
+                   mode: str, repo_label: str):
         try:
             subprocess.Popen(build_wt_command(title, cwd, claude_cmd))
             self.log.log_ok(f"Launched Claude ({mode}) in {repo_label}")
         except Exception as e:
             self.log.log_err(f"Failed to launch: {e}")
+
+    # --- Pre-launch remote-sync gate ---
+    #
+    # Every launch fetches first so an agent never starts on a stale checkout
+    # without the user knowing. The cached card status isn't trusted here: it
+    # reflects whenever Fetch was last pressed, which may be hours ago.
+    #
+    # Gate state rides on the worker objects and slots read it back through
+    # self.sender(): bound-method slots on this QObject are guaranteed to run
+    # on the GUI thread, which the dialogs below require.
+
+    def _gate_launch(self, repos, launch, on_cancel=None):
+        """Fetch repos; launch() if in sync, otherwise prompt to pull first."""
+        busy = [r.label for r in repos if r.path in self._gate_paths]
+        if busy:
+            self.log.log_info(
+                f"Already checking {', '.join(busy)} against remote — "
+                "answer that prompt first"
+            )
+            if on_cancel:
+                on_cancel()
+            return
+        what = repos[0].label if len(repos) == 1 else f"{len(repos)} repos"
+        self.log.log_info(f"Checking {what} against remote...")
+        worker = SyncCheckThread(list(repos), parent=self)
+        self._track_gate(worker, {r.path for r in repos}, launch, on_cancel)
+        worker.checked.connect(self._on_gate_checked)
+        worker.start()
+
+    def _track_gate(self, worker, paths, launch, on_cancel):
+        worker.gate_paths = paths
+        worker.gate_launch = launch
+        worker.gate_cancel = on_cancel
+        self._gate_paths |= paths
+        self._gate_workers.add(worker)
+
+    def _finish_gate(self, worker, go: bool):
+        self._gate_workers.discard(worker)
+        self._gate_paths -= worker.gate_paths
+        if go:
+            worker.gate_launch()
+        else:
+            self.log.log_info("Launch cancelled")
+            if worker.gate_cancel:
+                worker.gate_cancel()
+
+    def _apply_gate_status(self, status: RepoStatus):
+        # A failed fetch sets status.error, which would paint the card red over
+        # an otherwise fine local scan — leave the card on its last good state.
+        if status.error:
+            return
+        self._statuses[status.path] = status
+        if status.path in self.cards:
+            self.cards[status.path].update_status(status)
+
+    def _on_gate_checked(self, statuses: list):
+        worker = self.sender()
+        for s in statuses:
+            self._apply_gate_status(s)
+        report = classify_sync(statuses)
+        # Group by cause so an offline tiled batch logs one line, not eight.
+        by_error: dict[str, list[str]] = {}
+        for s in report.unchecked:
+            by_error.setdefault(s.error, []).append(s.label)
+        for error, labels in by_error.items():
+            self.log.log_err(
+                f"Couldn't verify {', '.join(labels)} against remote "
+                f"({error}) — launching on local state"
+            )
+        if not report.needs_prompt:
+            self._finish_gate(worker, go=True)
+            return
+
+        choice = self._ask_sync(report)
+        if choice != "pull":
+            self._finish_gate(worker, go=(choice == "launch"))
+            return
+
+        # Hand the gate over to a pull worker; the check worker is done.
+        self._gate_workers.discard(worker)
+        names = ", ".join(s.label for s in report.behind)
+        self.log.log_info(f"Pulling {names} (fast-forward only)...")
+        puller = GitWorker("pull", report.behind, parent=self)
+        puller.failures = []
+        self._track_gate(puller, worker.gate_paths,
+                         worker.gate_launch, worker.gate_cancel)
+        puller.repo_done.connect(self._on_gate_pull_repo)
+        puller.all_done.connect(self._on_gate_pulled)
+        puller.start()
+
+    def _ask_sync(self, report: SyncReport) -> str:
+        """Prompt for an out-of-sync launch. Returns 'pull', 'launch' or 'cancel'."""
+        count = len(report.behind) + len(report.diverged)
+        box = QMessageBox(self)
+        box.setWindowTitle("Out of sync with remote")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(
+            "This repo is out of sync with its remote." if count == 1
+            else f"{count} repos are out of sync with their remotes."
+        )
+        box.setInformativeText("\n".join(sync_prompt_lines(report)))
+        pull_btn = None
+        if report.behind:
+            pull_btn = box.addButton("Pull && Launch", QMessageBox.AcceptRole)
+        launch_btn = box.addButton("Launch Anyway", QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(pull_btn or launch_btn)
+        box.setEscapeButton(cancel_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if pull_btn is not None and clicked is pull_btn:
+            return "pull"
+        if clicked is launch_btn:
+            return "launch"
+        return "cancel"
+
+    def _on_gate_pull_repo(self, label: str, operation: str, success: bool,
+                           output: str):
+        self._on_repo_done_log(label, operation, success, output)
+        if not success:
+            self.sender().failures.append(label)
+
+    def _on_gate_pulled(self):
+        puller = self.sender()
+        # Refresh the pulled repos' cards in the background; the launch below
+        # doesn't wait on it.
+        rescan = RepoScannerThread(list(puller.repos), parent=self)
+        rescan.status_updated.connect(self._apply_gate_status)
+        rescan.scan_complete.connect(self._on_gate_rescanned)
+        self._gate_workers.add(rescan)
+        rescan.start()
+
+        if not puller.failures:
+            self._finish_gate(puller, go=True)
+            return
+        answer = QMessageBox.question(
+            self, "Pull failed",
+            f"Pull failed for {', '.join(puller.failures)} (details in the "
+            "log). Launch anyway on the current local state?",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+        )
+        self._finish_gate(puller, go=(answer == QMessageBox.Yes))
+
+    def _on_gate_rescanned(self):
+        self._gate_workers.discard(self.sender())
 
     def _launch_agent_heavy(self, repo_path: str):
         """Launch an auto-scaling multi-agent session against the repo.
@@ -1033,6 +1232,10 @@ class GitStatusPanel(QWidget):
         else:
             layout_key = "single"
 
+        self._gate_launch(dirty, lambda: self._start_auto_commit(dirty, layout_key))
+
+    def _start_auto_commit(self, dirty, layout_key: str):
+        count = len(dirty)
         self.log.log_info(f"Auto-committing {count} repo(s) via Sonnet...")
         self._auto_commit_worker = LaunchWorker(
             repos=dirty,

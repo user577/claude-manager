@@ -13,6 +13,7 @@ Two tabs: **Git** (status, batch operations, launching) and **Projects** (descri
 - **Git status dashboard** — dirty, ahead/behind, diverged, stash count for every repo
 - **Batch git operations** — commit, push (ahead-only), fetch+pull (ff-only) with .pyc cleanup
 - **Per-repo Claude launch** — Launch, Launch Auto, Agent Heavy (subagent ladder), and Agent Team on every repo card
+- **Remote-sync gate on every launch** — each launch (card buttons, Launch Tiled, Auto Commit, Generate Plan) fetches first; if a repo is behind or diverged, a prompt offers Pull & Launch (ff-only), Launch Anyway, or Cancel
 - **Tiled multi-launch** — tick any set of repos and open them all at once, auto-tiled (2x2 grid, vertical, horizontal, single)
 - **Auto Commit** — spawn a Sonnet instance per dirty repo to review changes and commit autonomously
 - **Projects tab** — browse every repo's auto-derived description, its PLAN/NEXT/ROADMAP/TODO docs, and its commit history
@@ -86,7 +87,7 @@ claude-manager/
 │           ├── log_output.py      # Timestamped colored log
 │           ├── usage_meter.py     # Toolbar usage + commit meters
 │           └── repo_status_card.py  # Checkbox, dot, details, launch buttons
-├── tests/                         # 59 tests
+├── tests/                         # 102 tests
 ├── docs/
 │   └── ollama-setup-guide.html    # Local LLM setup guide
 ├── claude_manager.spec            # PyInstaller config (auto-discovers src modules)
@@ -134,6 +135,7 @@ as "none of these repos belong here".
 - **`RepoStatus`** — branch, dirty flag, modified/untracked counts, ahead/behind, diverged, stash count, last commit
 - **`scan_one()`** runs 5 git commands per repo: `branch --show-current`, `status --porcelain`, `rev-list --left-right --count`, `stash list`, `log -1`
 - **`RepoScannerThread`** — scans all repos on a QThread, emits per-repo updates for live card refresh
+- **`check_sync()`** / **`SyncCheckThread`** / **`classify_sync()`** — the pre-launch remote check: a ~1.5s TCP probe of the remote host (once per host per batch) so offline fails fast, then fetch (failures surface as `error`, not a silent "in sync"), rescan, and sort into behind / diverged / unchecked
 
 ### Git Operations (`src/core/git_operations.py`)
 
@@ -236,7 +238,7 @@ fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 uv run pytest
 ```
 
-77 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency sort, card selection, and commit-counter scope detection.
+102 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency sort, card selection, commit-counter scope detection, and the pre-launch sync gate (classification, prompt text, remote-URL parsing, the offline fast path, and a real-git fetch → pull → launch run).
 
 ## Dependencies
 

@@ -1,7 +1,11 @@
 import json
+import re
+import socket
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import Signal, QThread
 
@@ -113,6 +117,160 @@ class RepoScannerThread(QThread):
                     result = RepoStatus(path=repo.path, label=repo.label, error=str(e))
                 self.status_updated.emit(result)
         self.scan_complete.emit()
+
+
+_DEFAULT_PORTS = {"https": 443, "http": 80, "ssh": 22, "git": 9418}
+# scp-like "user@host:path". A single-letter host is a Windows drive (C:/x).
+_SCP_RE = re.compile(r"^(?:[^@/]+@)?([^:/]{2,}):(?!//)")
+
+
+def remote_endpoint(url: str) -> tuple[str, int, str] | None:
+    """(host, port, scheme) to probe for a remote URL; None for local paths."""
+    url = url.strip()
+    if "://" in url:
+        parts = urlsplit(url)
+        port = _DEFAULT_PORTS.get(parts.scheme)
+        if not parts.hostname or port is None:
+            return None  # file://, or a scheme we don't know how to probe
+        try:
+            return parts.hostname, parts.port or port, parts.scheme
+        except ValueError:  # malformed port
+            return None
+    m = _SCP_RE.match(url)
+    return (m.group(1), 22, "ssh") if m else None
+
+
+def probe_remote(host: str, port: int, scheme: str,
+                 timeout: float = 1.5) -> bool | None:
+    """Quick reachability check. True/False, or None when it can't tell.
+
+    An SSH host that doesn't resolve may be a ~/.ssh/config alias that only
+    ssh itself understands, so that case is "unknown" and the caller falls
+    back to the real fetch instead of declaring the machine offline.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except socket.gaierror:
+        return None if scheme == "ssh" else False
+    except OSError:
+        return False
+
+
+class _ProbeCache:
+    """Probe each host once per batch, however many repos share it."""
+
+    def __init__(self, probe=probe_remote):
+        self._probe = probe
+        self._lock = threading.Lock()
+        self._events: dict[tuple, threading.Event] = {}
+        self._results: dict[tuple, bool | None] = {}
+
+    def __call__(self, host: str, port: int, scheme: str) -> bool | None:
+        key = (host, port, scheme)
+        with self._lock:
+            event = self._events.get(key)
+            owner = event is None
+            if owner:
+                event = self._events[key] = threading.Event()
+        if owner:
+            try:
+                self._results[key] = self._probe(host, port, scheme)
+            finally:
+                event.set()
+        else:
+            event.wait()
+        return self._results.get(key)
+
+
+def check_sync(repo: RepoInfo, timeout: int = 15,
+               probe=probe_remote) -> RepoStatus:
+    """Fetch the repo's remotes, then rescan, for a pre-launch sync check.
+
+    Unlike scan_one(fetch=True), a failed or timed-out fetch is recorded in
+    status.error rather than masked: the gate must not report "in sync" off
+    stale remote-tracking refs when it never actually reached the remote.
+
+    A fast TCP probe of the remote host runs first, so being offline costs
+    ~1.5s instead of the full fetch timeout.
+    """
+    fetch_error = None
+    endpoint = None
+    try:
+        # Default remote's URL (branch upstream, else origin); no network.
+        r = _git(repo.path, "ls-remote", "--get-url")
+        if r.returncode == 0:
+            endpoint = remote_endpoint(r.stdout)
+    except Exception:
+        pass
+    if endpoint and probe(*endpoint) is False:
+        fetch_error = f"offline — couldn't reach {endpoint[0]}"
+    else:
+        try:
+            r = _git(repo.path, "fetch", "--quiet", timeout=timeout)
+            if r.returncode != 0:
+                fetch_error = (r.stderr.strip() or "fetch failed").splitlines()[0]
+        except subprocess.TimeoutExpired:
+            fetch_error = f"fetch timed out after {timeout}s"
+        except Exception as e:
+            fetch_error = str(e)
+    status = scan_one(repo, fetch=False)
+    if fetch_error and not status.error:
+        status.error = fetch_error
+    return status
+
+
+@dataclass
+class SyncReport:
+    """Pre-launch classification of freshly fetched repo statuses."""
+    behind: list[RepoStatus]     # strictly behind: a ff-only pull can fix it
+    diverged: list[RepoStatus]   # ahead and behind: needs a manual merge/rebase
+    unchecked: list[RepoStatus]  # fetch or scan failed, state unknown
+
+    @property
+    def needs_prompt(self) -> bool:
+        return bool(self.behind or self.diverged)
+
+
+def classify_sync(statuses: list[RepoStatus]) -> SyncReport:
+    """Sort statuses into the buckets the launch gate acts on.
+
+    Pure so it can be tested without git or a QApplication. A repo whose
+    fetch failed still lands in behind/diverged if its cached refs say so —
+    that's stale but not wrong — and is also listed as unchecked.
+    """
+    behind, diverged, unchecked = [], [], []
+    for s in statuses:
+        if s.error:
+            unchecked.append(s)
+        if s.diverged:
+            diverged.append(s)
+        elif s.behind > 0:
+            behind.append(s)
+    return SyncReport(behind, diverged, unchecked)
+
+
+class SyncCheckThread(QThread):
+    """Runs check_sync over a batch of repos in parallel."""
+    checked = Signal(list)  # list[RepoStatus], in input order
+
+    def __init__(self, repos: list[RepoInfo], parent=None):
+        super().__init__(parent)
+        self.repos = repos
+
+    def run(self):
+        workers = min(16, max(1, len(self.repos)))
+        probe = _ProbeCache()
+
+        def safe_check(repo: RepoInfo) -> RepoStatus:
+            try:
+                return check_sync(repo, probe=probe)
+            except Exception as e:
+                return RepoStatus(path=repo.path, label=repo.label, error=str(e))
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(safe_check, self.repos))
+        self.checked.emit(results)
 
 
 @dataclass
