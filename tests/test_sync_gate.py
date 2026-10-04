@@ -6,7 +6,7 @@ import pytest
 
 from src.config.settings import RepoInfo
 from src.core.repo_scanner import (
-    RepoStatus, check_sync, classify_sync, remote_endpoint, _ProbeCache,
+    RepoStatus, verify_remote_sync, classify_sync, remote_endpoint, _ProbeCache,
 )
 from src.gui.git_status_panel import sync_prompt_lines
 
@@ -116,7 +116,7 @@ def test_probe_cache_probes_each_host_once():
     assert results == [False] * 8
 
 
-# --- check_sync against real repos ---
+# --- verify_remote_sync against real repos ---
 
 def git(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True,
@@ -142,19 +142,19 @@ def make_remote_and_clones(tmp_path):
     return mine, theirs
 
 
-def test_check_sync_sees_remote_commits_without_prior_fetch(tmp_path):
+def test_verify_remote_sync_sees_remote_commits_without_prior_fetch(tmp_path):
     mine, theirs = make_remote_and_clones(tmp_path)
     git(theirs, "commit", "--allow-empty", "-m", "upstream work")
     git(theirs, "push")
 
     # mine's remote-tracking ref is stale; only a fetch reveals it's behind.
-    s = check_sync(RepoInfo(path=str(mine), label="mine"))
+    s = verify_remote_sync(RepoInfo(path=str(mine), label="mine"))
     assert s.error is None
     assert s.behind == 1
     assert classify_sync([s]).behind == [s]
 
 
-def test_check_sync_offline_skips_fetch(tmp_path):
+def test_verify_remote_sync_offline_skips_fetch(tmp_path):
     mine, _ = make_remote_and_clones(tmp_path)
     # A non-routable address: a real fetch would hang until the timeout.
     git(mine, "remote", "set-url", "origin", "https://10.255.255.1/o/r.git")
@@ -165,20 +165,20 @@ def test_check_sync_offline_skips_fetch(tmp_path):
         return False
 
     start = time.monotonic()
-    s = check_sync(RepoInfo(path=str(mine), label="mine"), probe=offline)
+    s = verify_remote_sync(RepoInfo(path=str(mine), label="mine"), probe=offline)
     assert time.monotonic() - start < 3
     assert probed == [("10.255.255.1", 443)]
     assert s.error == "offline — couldn't reach 10.255.255.1"
     assert s.branch == "main", "local scan still runs"
 
 
-def test_check_sync_unknown_probe_falls_back_to_fetch(tmp_path):
+def test_verify_remote_sync_unknown_probe_falls_back_to_fetch(tmp_path):
     # e.g. an ssh config alias: the probe can't tell, so the real fetch decides.
     mine, theirs = make_remote_and_clones(tmp_path)
     git(theirs, "commit", "--allow-empty", "-m", "upstream work")
     git(theirs, "push")
-    s = check_sync(RepoInfo(path=str(mine), label="mine"),
-                   probe=lambda *a: None)
+    s = verify_remote_sync(RepoInfo(path=str(mine), label="mine"),
+                           probe=lambda *a: None)
     assert s.error is None and s.behind == 1
 
 
@@ -210,14 +210,14 @@ def test_gate_pulls_then_launches(tmp_path, monkeypatch):
 
     assert len(prompts) == 1 and prompts[0].behind[0].behind == 1
     assert len(spawned) == 1
-    assert check_sync(repo).behind == 0, "repo should have been fast-forwarded"
+    assert verify_remote_sync(repo).behind == 0, "repo should have been fast-forwarded"
     assert not panel._gate_paths
     panel.deleteLater()
 
 
-def test_check_sync_reports_unreachable_remote(tmp_path):
+def test_verify_remote_sync_reports_unreachable_remote(tmp_path):
     mine, _ = make_remote_and_clones(tmp_path)
     git(mine, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
-    s = check_sync(RepoInfo(path=str(mine), label="mine"))
+    s = verify_remote_sync(RepoInfo(path=str(mine), label="mine"))
     assert s.error
     assert classify_sync([s]).unchecked == [s]
