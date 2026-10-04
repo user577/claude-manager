@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.constants import APP_DISPLAY_NAME, ICON_PATH
-from src.config.settings import Settings
+from src.config.settings import Settings, SHARED_SUFFIX
 from src.core.process_launcher import OllamaHealthWorker
 from src.gui.git_status_panel import GitStatusPanel
 from src.gui.project_panel import ProjectPanel
@@ -252,11 +252,20 @@ class MainWindow(QMainWindow):
             self.account_combo.setEnabled(False)
         else:
             self.account_combo.setEnabled(True)
+            # Each user's shared workspace sits right after its owned one.
+            ordered = []
             for acct in self.settings.accounts:
-                label = acct.username or "(default)"
+                if not acct.shared:
+                    ordered.append(acct)
+                    shared = self.settings.find(acct.username + SHARED_SUFFIX)
+                    if shared is not None:
+                        ordered.append(shared)
+            ordered += [a for a in self.settings.accounts if a not in ordered]
+            for acct in ordered:
+                label = acct.display_name
                 if not acct.folder:
                     label += "  ⚠ no folder"
-                self.account_combo.addItem(label, acct.username)
+                self.account_combo.addItem(label, acct.key)
             idx = self.account_combo.findData(self.settings.active_account)
             if idx >= 0:
                 self.account_combo.setCurrentIndex(idx)
@@ -279,7 +288,7 @@ class MainWindow(QMainWindow):
         acct = self.settings.active()
         if acct is not None and not acct.folder:
             self.git_panel.log.log_info(
-                f"No folder set for {acct.username or 'this account'} — "
+                f"No folder set for {acct.display_name} — "
                 "open Settings to choose one."
             )
         added, removed = self.settings.sync_repos()
@@ -303,12 +312,19 @@ class MainWindow(QMainWindow):
 
     def _on_account_changed(self, index: int):
         """Switch the active account: swap folder/repos and the gh identity."""
-        username = self.account_combo.itemData(index)
-        if username is None or username == self.settings.active_account:
+        key = self.account_combo.itemData(index)
+        if key is None or key == self.settings.active_account:
             return
+        acct = self.settings.find(key)
+        if acct is None:
+            return
+        username = acct.username
+        prev = self.settings.active()
+        identity_changed = prev is None or prev.username != username
 
-        # Keep the gh CLI identity in sync with the selected account.
-        if username:
+        # Keep the gh CLI identity in sync with the selected account. Moving
+        # between a user's owned and shared workspaces keeps the same identity.
+        if username and identity_changed:
             from src.core.github_accounts import switch_account
             ok, msg = switch_account(username)
             if ok:
@@ -321,12 +337,13 @@ class MainWindow(QMainWindow):
                 )
 
         # Swap the visible workspace to this account's folder.
-        self.settings.active_account = username
+        self.settings.active_account = key
         self.settings.save()
         self._apply_active_account()
         # The commit meter tracks the active gh identity's contribution graph,
         # so recount now that the identity changed.
-        self._check_commits(force=True)
+        if identity_changed:
+            self._check_commits(force=True)
 
     # Minimum spacing between usage fetches. The endpoint throttles under
     # frequent polling (returns an empty payload), so manual clicks and
