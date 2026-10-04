@@ -183,8 +183,8 @@ class _ProbeCache:
         return self._results.get(key)
 
 
-def check_sync(repo: RepoInfo, timeout: int = 15,
-               probe=probe_remote) -> RepoStatus:
+def verify_remote_sync(repo: RepoInfo, timeout: int = 15,
+                       probe=probe_remote) -> RepoStatus:
     """Fetch the repo's remotes, then rescan, for a pre-launch sync check.
 
     Unlike scan_one(fetch=True), a failed or timed-out fetch is recorded in
@@ -251,7 +251,7 @@ def classify_sync(statuses: list[RepoStatus]) -> SyncReport:
 
 
 class SyncCheckThread(QThread):
-    """Runs check_sync over a batch of repos in parallel."""
+    """Runs verify_remote_sync over a batch of repos in parallel."""
     checked = Signal(list)  # list[RepoStatus], in input order
 
     def __init__(self, repos: list[RepoInfo], parent=None):
@@ -264,7 +264,7 @@ class SyncCheckThread(QThread):
 
         def safe_check(repo: RepoInfo) -> RepoStatus:
             try:
-                return check_sync(repo, probe=probe)
+                return verify_remote_sync(repo, probe=probe)
             except Exception as e:
                 return RepoStatus(path=repo.path, label=repo.label, error=str(e))
 

@@ -137,7 +137,7 @@ as "none of these repos belong here".
 - **`RepoStatus`** — branch, dirty flag, modified/untracked counts, ahead/behind, diverged, stash count, last commit
 - **`scan_one()`** runs 5 git commands per repo: `branch --show-current`, `status --porcelain`, `rev-list --left-right --count`, `stash list`, `log -1`
 - **`RepoScannerThread`** — scans all repos on a QThread, emits per-repo updates for live card refresh
-- **`check_sync()`** / **`SyncCheckThread`** / **`classify_sync()`** — the pre-launch remote check: a ~1.5s TCP probe of the remote host (once per host per batch) so offline fails fast, then fetch (failures surface as `error`, not a silent "in sync"), rescan, and sort into behind / diverged / unchecked
+- **`verify_remote_sync()`** / **`SyncCheckThread`** / **`classify_sync()`** — the pre-launch remote check: a ~1.5s TCP probe of the remote host (once per host per batch) so offline fails fast, then fetch (failures surface as `error`, not a silent "in sync"), rescan, and sort into behind / diverged / unchecked
 
 ### Git Operations (`src/core/git_operations.py`)
 
