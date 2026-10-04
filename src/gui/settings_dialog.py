@@ -29,8 +29,7 @@ class SettingsDialog(QDialog):
         if self.settings.accounts:
             for acct in self.settings.accounts:
                 row = QHBoxLayout()
-                name = acct.username or "(default)"
-                lbl = QLabel(name)
+                lbl = QLabel(acct.display_name)
                 lbl.setMinimumWidth(130)
                 lbl.setStyleSheet("font-weight: bold;")
                 row.addWidget(lbl)
@@ -39,10 +38,10 @@ class SettingsDialog(QDialog):
                 row.addWidget(edit, 1)
                 browse = QPushButton("Browse")
                 browse.clicked.connect(
-                    lambda _checked=False, u=acct.username: self._browse_account(u)
+                    lambda _checked=False, k=acct.key: self._browse_account(k)
                 )
                 row.addWidget(browse)
-                self.folder_edits[acct.username] = edit
+                self.folder_edits[acct.key] = edit
                 layout.addLayout(row)
         else:
             hint = QLabel("No GitHub accounts detected. Run `gh auth login` first.")
@@ -56,7 +55,7 @@ class SettingsDialog(QDialog):
 
         # --- Active-account repo list --------------------------------------
         active = self.settings.active()
-        active_name = (active.username or "(default)") if active else "(none)"
+        active_name = active.display_name if active else "(none)"
         layout.addWidget(QLabel(f"Repositories for {active_name}:"))
         self.repo_list = QListWidget()
         self._reload_repo_list()
@@ -114,28 +113,29 @@ class SettingsDialog(QDialog):
 
     # --- Folder rows --------------------------------------------------------
 
-    def _browse_account(self, username: str):
-        edit = self.folder_edits.get(username)
-        if edit is None:
+    def _browse_account(self, key: str):
+        edit = self.folder_edits.get(key)
+        acct = self.settings.find(key)
+        if edit is None or acct is None:
             return
         start = edit.text() or str(Path.home())
-        name = username or "default"
-        d = QFileDialog.getExistingDirectory(self, f"Folder for {name}", start)
+        d = QFileDialog.getExistingDirectory(
+            self, f"Folder for {acct.display_name}", start,
+        )
         if d:
             edit.setText(d)
             # If this is the active account, adopt the folder immediately so
             # Auto-Discover and the repo list reflect the new choice.
             active = self.settings.active()
-            if active is not None and active.username == username:
+            if active is not None and active.key == key:
                 active.folder = d
 
     def apply(self):
         """Write folder edits back into their accounts. Called on OK."""
-        for username, edit in self.folder_edits.items():
-            for acct in self.settings.accounts:
-                if acct.username == username:
-                    acct.folder = edit.text().strip()
-                    break
+        for key, edit in self.folder_edits.items():
+            acct = self.settings.find(key)
+            if acct is not None:
+                acct.folder = edit.text().strip()
         self.settings.commit_goal = self.goal_spin.value()
 
     # --- Repo list (scoped to active account) -------------------------------
@@ -185,7 +185,7 @@ class SettingsDialog(QDialog):
         if active is None:
             return
         # Adopt the (possibly just-edited) folder before scanning.
-        edit = self.folder_edits.get(active.username)
+        edit = self.folder_edits.get(active.key)
         if edit is not None:
             active.folder = edit.text().strip()
         added, removed = active.sync_repos()

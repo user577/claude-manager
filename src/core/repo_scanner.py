@@ -281,28 +281,61 @@ class RemoteRepo:
     is_private: bool
 
 
+# One JSON object per line, in the same shape `gh repo list --json` gives.
+_COLLAB_JQ = (
+    ".[] | {name, url: .html_url, description, isPrivate: .private}"
+)
+
+
+def collaborator_repos_cmd() -> list[str]:
+    """`gh` argv listing repos the user collaborates on but doesn't own.
+
+    `gh repo list` only covers repos the account owns, so this goes to the REST
+    endpoint with ``affiliation=collaborator`` and pages through all results.
+    """
+    return [
+        "gh", "api", "--paginate",
+        "user/repos?affiliation=collaborator&per_page=100",
+        "--jq", _COLLAB_JQ,
+    ]
+
+
+def parse_collaborator_repos(stdout: str) -> list[dict]:
+    return [json.loads(line) for line in stdout.splitlines() if line.strip()]
+
+
 class GitHubSyncThread(QThread):
-    """Queries GitHub for all repos owned by the authenticated user and
-    compares against locally cloned repos."""
+    """Queries GitHub for the authenticated user's repos — owned ones, or with
+    ``collaborator=True`` the ones shared with them — and compares against
+    locally cloned repos."""
     finished = Signal(list, list)  # (missing: list[RemoteRepo], error: list[str])
 
-    def __init__(self, local_names: set[str], parent=None):
+    def __init__(self, local_names: set[str], collaborator: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.local_names = local_names
+        self.collaborator = collaborator
 
     def run(self):
         try:
+            if self.collaborator:
+                cmd = collaborator_repos_cmd()
+            else:
+                cmd = ["gh", "repo", "list", "--limit", "200", "--json",
+                       "name,url,description,isPrivate"]
             r = subprocess.run(
-                ["gh", "repo", "list", "--limit", "200", "--json",
-                 "name,url,description,isPrivate"],
+                cmd,
                 capture_output=True, text=True, timeout=30,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if r.returncode != 0:
-                self.finished.emit([], [f"gh repo list failed: {r.stderr.strip()}"])
+                self.finished.emit([], [f"{' '.join(cmd[:3])} failed: {r.stderr.strip()}"])
                 return
 
-            repos = json.loads(r.stdout)
+            if self.collaborator:
+                repos = parse_collaborator_repos(r.stdout)
+            else:
+                repos = json.loads(r.stdout)
             missing = []
             for repo in repos:
                 if repo["name"] not in self.local_names:

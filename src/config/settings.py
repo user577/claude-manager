@@ -11,6 +11,15 @@ from src.constants import CONFIG_DIR, CONFIG_FILE, DEFAULT_GITHUB_DIR
 # Settings.sync_accounts() once the gh CLI has been queried.
 LEGACY_USERNAME = ""
 
+# Appended to a username to key that account's "shared with me" workspace —
+# the repos it collaborates on but doesn't own. Owned workspaces key on the
+# bare username, so configs written before shared workspaces still resolve.
+SHARED_SUFFIX = "#shared"
+
+# Default folder for a shared workspace, inside the owning account's folder so
+# folder-scoped git config (includeIf identity, safe.directory) still applies.
+SHARED_SUBFOLDER = "shared"
+
 
 def _norm(path: str) -> str:
     """Absolute path normalised for comparison.
@@ -56,6 +65,20 @@ class GitHubAccount:
     username: str
     folder: str = ""
     repos: list[RepoInfo] = field(default_factory=list)
+    # The account's second workspace: repos owned by someone else that this
+    # account collaborates on. Same gh identity, its own folder, keyed apart
+    # from the owned workspace by `key`.
+    shared: bool = False
+
+    @property
+    def key(self) -> str:
+        """Unique id for this workspace; what `Settings.active_account` holds."""
+        return self.username + SHARED_SUFFIX if self.shared else self.username
+
+    @property
+    def display_name(self) -> str:
+        name = self.username or "(default)"
+        return f"{name} · shared" if self.shared else name
 
     @classmethod
     def from_dict(cls, d: dict) -> "GitHubAccount":
@@ -63,6 +86,7 @@ class GitHubAccount:
             username=d.get("username", ""),
             folder=d.get("folder", ""),
             repos=[RepoInfo(**r) for r in d.get("repos", [])],
+            shared=d.get("shared", False),
         )
 
     def to_dict(self) -> dict:
@@ -70,6 +94,7 @@ class GitHubAccount:
             "username": self.username,
             "folder": self.folder,
             "repos": [asdict(r) for r in self.repos],
+            "shared": self.shared,
         }
 
     def owns(self, path: str) -> bool:
@@ -185,7 +210,7 @@ class Settings:
                 username=LEGACY_USERNAME, folder=str(DEFAULT_GITHUB_DIR),
             )]
         if active_account is None:
-            active_account = accounts[0].username
+            active_account = accounts[0].key
 
         self.accounts = accounts
         self.active_account = active_account
@@ -213,9 +238,12 @@ class Settings:
         if not self.accounts:
             return None
         for a in self.accounts:
-            if a.username == self.active_account:
+            if a.key == self.active_account:
                 return a
         return self.accounts[0]
+
+    def find(self, key: str) -> GitHubAccount | None:
+        return next((a for a in self.accounts if a.key == key), None)
 
     @property
     def repos(self) -> list[RepoInfo]:
@@ -323,13 +351,9 @@ class Settings:
         changed = False
 
         # 1. Adopt the legacy bucket into the active gh account.
-        legacy = next(
-            (a for a in self.accounts if a.username == LEGACY_USERNAME), None
-        )
+        legacy = self.find(LEGACY_USERNAME)
         if legacy is not None and active:
-            existing = next(
-                (a for a in self.accounts if a.username == active), None
-            )
+            existing = self.find(active)
             if existing is None:
                 legacy.username = active
             else:
@@ -341,22 +365,36 @@ class Settings:
                 self.active_account = active
             changed = True
 
-        # 2. Auto-add a row for each gh account we don't track yet.
-        have = {a.username for a in self.accounts}
+        # 2. Auto-add an owned and a shared row for each gh account we don't
+        #    track yet (the shared row also back-fills configs that predate it).
+        have = {a.key for a in self.accounts}
         for u in usernames:
-            if u and u not in have:
-                self.accounts.append(GitHubAccount(username=u))
-                have.add(u)
-                changed = True
+            if not u:
+                continue
+            for acct in (GitHubAccount(username=u),
+                         GitHubAccount(username=u, shared=True)):
+                if acct.key not in have:
+                    self.accounts.append(acct)
+                    have.add(acct.key)
+                    changed = True
 
-        # 3. Keep active_account aligned with the active gh account.
-        names = {a.username for a in self.accounts}
-        if active and active in names:
-            if self.active_account != active:
+        # 3. Default each empty shared folder to a subfolder of its owner's.
+        for a in self.accounts:
+            if a.shared and not a.folder:
+                owner = self.find(a.username)
+                if owner is not None and owner.folder:
+                    a.folder = str(Path(owner.folder) / SHARED_SUBFOLDER)
+                    changed = True
+
+        # 4. Keep active_account aligned with the active gh account. Either of
+        #    that user's workspaces counts as aligned — both use its identity.
+        current = self.find(self.active_account)
+        if active and self.find(active) is not None:
+            if current is None or current.username != active:
                 self.active_account = active
                 changed = True
-        elif self.active_account not in names and self.accounts:
-            self.active_account = self.accounts[0].username
+        elif current is None and self.accounts:
+            self.active_account = self.accounts[0].key
             changed = True
 
         return changed
@@ -376,14 +414,14 @@ class Settings:
     def prune_all_accounts(self) -> dict[str, list[RepoInfo]]:
         """Scope *every* account's repo list to its own folder.
 
-        Returns ``{username: dropped}`` for the accounts that actually changed,
+        Returns ``{key: dropped}`` for the accounts that actually changed,
         so the caller can report the cleanup and save.
         """
         dropped: dict[str, list[RepoInfo]] = {}
         for a in self.accounts:
             gone = a.prune_foreign_repos()
             if gone:
-                dropped[a.username] = gone
+                dropped[a.key] = gone
         return dropped
 
     def get_all_tags(self) -> list[str]:

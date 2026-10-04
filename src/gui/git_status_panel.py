@@ -328,7 +328,10 @@ class GitStatusPanel(QWidget):
             "QPushButton { background: #6e40c9; color: #ffffff; border: none; font-weight: bold; }"
             "QPushButton:hover { background: #8b5cf6; }"
         )
-        self.github_btn.setToolTip("Find repos on your GitHub account that aren't cloned locally")
+        self.github_btn.setToolTip(
+            "Find repos on your GitHub account that aren't cloned locally "
+            "(in a · shared view: repos you collaborate on)"
+        )
         self.github_btn.clicked.connect(self._on_check_github)
         action_row.addWidget(self.github_btn)
 
@@ -858,7 +861,13 @@ class GitStatusPanel(QWidget):
     def _on_check_github(self):
         """Query GitHub for repos not cloned locally."""
         self.github_btn.setEnabled(False)
-        self.log.log_info("Checking GitHub for uncloned repos...")
+        # The shared workspace looks for repos shared with this user instead.
+        acct = self.settings.active()
+        collaborator = acct is not None and acct.shared
+        self.log.log_info(
+            "Checking GitHub for uncloned shared repos..." if collaborator
+            else "Checking GitHub for uncloned repos..."
+        )
 
         # Collect local repo folder names
         github_dir = Path(self.settings.github_dir)
@@ -868,7 +877,9 @@ class GitStatusPanel(QWidget):
                 if child.is_dir():
                     local_names.add(child.name)
 
-        self._gh_sync = GitHubSyncThread(local_names, parent=self)
+        self._gh_sync = GitHubSyncThread(
+            local_names, collaborator=collaborator, parent=self,
+        )
         self._gh_sync.finished.connect(self._on_github_sync_done)
         self._gh_sync.start()
 

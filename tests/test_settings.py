@@ -139,9 +139,72 @@ def test_sync_accounts_adopts_legacy_into_active():
     s = Settings(github_dir="/work", repos=[RepoInfo(path="/work/a", label="a")])
     changed = s.sync_accounts(["user577"], "user577")
     assert changed
-    assert [a.username for a in s.accounts] == ["user577"]
+    assert [a.key for a in s.accounts] == ["user577", "user577#shared"]
     assert s.active_account == "user577"
     assert s.repos[0].label == "a"  # folder + repos preserved
+
+
+# --- Shared ("collaborator") workspaces -------------------------------------
+
+
+def test_sync_accounts_adds_a_shared_workspace_under_the_owned_folder():
+    s = Settings(github_dir="/work")
+    s.sync_accounts(["user577"], "user577")
+    shared = s.find("user577#shared")
+    assert shared is not None and shared.shared
+    assert shared.username == "user577"
+    assert Path(shared.folder) == Path("/work") / "shared"
+    assert shared.display_name == "user577 · shared"
+
+
+def test_shared_folder_is_not_overwritten_once_set():
+    s = Settings(accounts=[
+        GitHubAccount(username="user577", folder="/work"),
+        GitHubAccount(username="user577", folder="/elsewhere", shared=True),
+    ], active_account="user577")
+    assert not s.sync_accounts(["user577"], "user577")
+    assert s.find("user577#shared").folder == "/elsewhere"
+
+
+def test_shared_workspace_stays_active_while_its_user_is_the_gh_identity():
+    s = Settings(github_dir="/work")
+    s.sync_accounts(["user577", "acct2"], "user577")
+    s.active_account = "user577#shared"
+    s.sync_accounts(["user577", "acct2"], "user577")
+    assert s.active_account == "user577#shared"
+    assert s.active().shared
+    # gh switched to another user outside the app: follow it.
+    s.sync_accounts(["user577", "acct2"], "acct2")
+    assert s.active_account == "acct2"
+
+
+def test_owned_and_shared_workspaces_keep_separate_repos(tmp_path):
+    own = tmp_path / "GitHub"
+    _mkrepo(own, "mine")
+    _mkrepo(own / "shared", "energy-monitor")
+    s = Settings(accounts=[
+        GitHubAccount(username="user577", folder=str(own)),
+        GitHubAccount(username="user577", folder=str(own / "shared"),
+                      shared=True),
+    ], active_account="user577")
+    s.sync_repos()
+    assert [r.label for r in s.repos] == ["mine"]
+    s.active_account = "user577#shared"
+    s.sync_repos()
+    assert [r.label for r in s.repos] == ["energy-monitor"]
+
+
+def test_shared_flag_round_trips_through_save(tmp_path):
+    config_file = tmp_path / "settings.json"
+    with patch("src.config.settings.CONFIG_FILE", config_file), \
+         patch("src.config.settings.CONFIG_DIR", tmp_path):
+        Settings(accounts=[
+            GitHubAccount(username="user577"),
+            GitHubAccount(username="user577", shared=True),
+        ], active_account="user577#shared").save()
+        s = Settings.load()
+    assert [a.key for a in s.accounts] == ["user577", "user577#shared"]
+    assert s.active().shared
 
 
 def test_sync_accounts_adds_new_accounts():
