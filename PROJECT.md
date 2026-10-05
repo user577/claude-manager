@@ -11,7 +11,8 @@ Two tabs: **Git** (status, batch operations, launching) and **Projects** (descri
 ## Features
 
 - **Git status dashboard** — dirty, ahead/behind, diverged, stash count for every repo
-- **Batch git operations** — commit, push (ahead-only), fetch+pull (ff-only) with .pyc cleanup
+- **One read-only Refresh** — rescans every repo, fetches remotes, and checks GitHub for uncloned repos; changes nothing
+- **Batch git operations** — commit, Pull (ff-only), Push (ahead-only), Clone, each labelled with how many repos it would touch; the counts follow the ticked repos, or cover all repos when none are ticked
 - **Per-repo Claude launch** — Launch, Launch Auto, Agent Heavy (subagent ladder), and Agent Team on every repo card
 - **Remote-sync gate on every launch** — each launch (card buttons, Launch Tiled, Auto Commit, Generate Plan) fetches first; if a repo is behind or diverged, a prompt offers Pull & Launch (ff-only), Launch Anyway, or Cancel
 - **New Project interview** — the New Project button creates a blank repo and opens Claude there to interview you (AskUserQuestion rounds: goal, users, first-version scope, stack, constraints, GitHub repo), confirm a brief, then name it, write README.md + PLAN.md, scaffold, and commit; optionally `gh repo create`. The folder takes its chosen name on the next Refresh after the window closes
@@ -19,7 +20,7 @@ Two tabs: **Git** (status, batch operations, launching) and **Projects** (descri
 - **Auto Commit** — spawn a Sonnet instance per dirty repo to review changes and commit autonomously
 - **Projects tab** — browse every repo's auto-derived description, its PLAN/NEXT/ROADMAP/TODO docs, and its commit history
 - **Live usage meters** — 5-hour / 7-day limit windows plus a daily commit counter in the toolbar
-- **Multi-account** — switch GitHub accounts (via `gh`), each with its own repo folder
+- **Multi-account** — switch GitHub accounts (via `gh`), each with its own repo folder plus a `· shared` workspace for repos shared with you
 - **Tag-based filtering** — organize repos with custom tags, filter in both tabs
 - **Single-instance enforcement** — Windows mutex prevents duplicate app windows
 - **VS Code Dark+ theme** — conventional charcoal/blue color scheme
@@ -33,6 +34,7 @@ A local-LLM (Ollama) backend exists in `src/core/process_launcher.py` with no UI
 - [Git](https://git-scm.com/) on PATH
 - [Windows Terminal](https://aka.ms/terminal) (`wt.exe`) on PATH
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`) on PATH
+- [GitHub CLI](https://cli.github.com/) (`gh`), signed in — accounts, Clone, commit counter
 - Optional: [Ollama](https://ollama.com/) for local LLM backend
 
 ## Running from Source
@@ -45,8 +47,12 @@ uv run python main.py
 ## Building the Installer
 
 ```bash
+uv sync --python 3.12 --python-preference only-managed
 uv run python build_installer.py
 ```
+
+Build under a uv-managed Python. The spec refuses to freeze unless the OpenSSL DLLs come
+from the building interpreter; a system Python can trip that check and stop the build.
 
 This cleans all `.pyc` / `__pycache__`, runs PyInstaller, then compiles the Inno Setup installer. Output: `Output/ClaudeManager-Setup-1.0.0.exe` (~32 MB).
 
@@ -89,7 +95,7 @@ claude-manager/
 │           ├── log_output.py      # Timestamped colored log
 │           ├── usage_meter.py     # Toolbar usage + commit meters
 │           └── repo_status_card.py  # Checkbox, dot, details, launch buttons
-├── tests/                         # 125 tests
+├── tests/                         # 152 tests
 ├── docs/
 │   └── ollama-setup-guide.html    # Local LLM setup guide
 ├── claude_manager.spec            # PyInstaller config (auto-discovers src modules)
@@ -171,13 +177,16 @@ as "none of these repos belong here".
 
 - Status cards for every repo with a select checkbox, colored dot, branch, change summary, last commit hash
 - **Per-card launches** — Launch, Launch Auto, Agent Heavy, Agent Team, each scoped to that repo with a guardrail prompt
-- **Quick-select** — Select Dirty / Ahead / Behind tick the matching cards; Clear unticks everything
+- **Quick-select** — Select Dirty / Ahead / Behind tick the matching cards; Clear unticks everything; Out of Sync filters to ahead, behind, diverged or dirty repos
+- **Sort** — Name, Recently Modified (last commit or uncommitted change, whichever is newer), or Status (urgent first: error → diverged → behind+modified → behind → modified → ahead → untracked → clean → unscanned)
+- **Refresh** — the one read-only sync action: rescan, fetch remotes so ahead/behind is current, and check GitHub for repos not cloned here
+- **Pull (n) / Push (n) / Clone (n)** — the counts are what each button would act on right now: the ticked repos if any are ticked, otherwise all. They stay disabled mid-scan so a half-updated count can't drive an action
+  - **Pull** — fetch and fast-forward repos that are behind; diverged repos are skipped
+  - **Push** — push repos that are strictly ahead; diverged repos are skipped
+  - **Clone** — clone the account's repos (or, in a `· shared` workspace, repos shared with you) that aren't in the folder yet
 - **Launch Tiled** — opens Claude in every ticked repo and tiles the windows (layout + model persist to settings)
 - **Auto Commit** — one Sonnet instance per dirty repo, reviews and commits autonomously
 - Batch commit with confirmation dialog (shows `git diff --stat` per repo)
-- **Push Ahead** — only pushes repos strictly ahead of remote, skips diverged/behind
-- **Fetch & Pull All** — safe sync (ff-only), never overwrites remote
-- **Check GitHub / Clone Missing** — finds and clones repos not present locally
 - Cancel button for long-running operations
 - Auto-rescans after every operation
 
@@ -213,7 +222,8 @@ fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 
 - **Pull is always `--ff-only`** — never creates merge commits, fails gracefully on diverged repos
 - **Push is never forced** — standard `git push` rejects non-fast-forward
-- **Push Ahead skips diverged repos** — only pushes repos that are strictly ahead with no remote changes
+- **Push skips diverged repos** — only pushes repos that are strictly ahead with no remote changes
+- **Refresh changes nothing** — it scans and fetches only; every write is its own button
 - **Commit shows diff preview** — confirmation dialog with `git diff --stat` before committing
 - **Single instance** — mutex prevents accidentally running two managers
 
@@ -231,7 +241,7 @@ fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 | Ctrl+L | Launch selected repos tiled |
 | Ctrl+1 | Switch to Git tab |
 | Ctrl+2 | Switch to Projects tab |
-| Ctrl+R | Refresh git status |
+| Ctrl+R | Refresh (rescan, fetch, check GitHub) |
 | Ctrl+Enter | Commit all dirty repos |
 
 ## Tests
@@ -240,7 +250,7 @@ fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 uv run pytest
 ```
 
-125 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency sort, card selection, commit-counter scope detection, and the pre-launch sync gate (classification, prompt text, remote-URL parsing, the offline fast path, and a real-git fetch → pull → launch run), and new-project kickoff (cmd-safe prompt, folder naming, deferred rename, the button end to end).
+152 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency and recent-activity sorts, card selection, the sync controls (Pull/Push/Clone targeting and counts, the single Refresh), GitHub clone discovery, ahead/behind inference for branches pushed without an upstream, commit-counter scope detection, and the pre-launch sync gate (classification, prompt text, remote-URL parsing, the offline fast path, and a real-git fetch → pull → launch run), and new-project kickoff (cmd-safe prompt, folder naming, deferred rename, the button end to end).
 
 ## Dependencies
 
@@ -250,18 +260,30 @@ uv run pytest
 
 ## Git History
 
+Milestones only; `git log` has the full history.
+
 | Commit | Description |
 |--------|-------------|
-| `ed5d6d5` | Initial commit — launch, tile, git-manage |
-| `e511c31` | Permission mode selector |
-| `8954d1a` | Harden reliability, UX polish |
-| `2d88b74` | Search filter, diff preview, shortcuts, 22 tests |
-| `a5cdfcd` | Model selection, initial prompt, worktree, session resume |
-| `399bfa4` | Workspace presets — save, load, delete |
-| `5d6fe53` | Stash count and divergence detection |
-| `50d6ca8` | Repo tagging system with pill-shaped filters |
-| `2747911` | Local Ollama backend toggle |
-| `15729ae` | Ollama setup guide (HTML) |
-| `400cd7e` | Ollama UX: background health, test button, pull from UI |
-| `fd45e68` | Single-instance lock, per-repo Launch, safe push, suppress CMD flash |
-| `39b1602` | VS Code Dark+ color scheme |
+| `2f18deb` | Initial commit — launch, tile, git-manage |
+| `ac11e91` | Search filter, diff preview, shortcuts, first tests |
+| `a8b3e7e` | Stash count and divergence detection |
+| `fac2d5d` | Repo tagging with pill-shaped filters |
+| `5202dd8` | Single-instance lock, per-repo Launch, safe push |
+| `9a29fc0` | VS Code Dark+ color scheme |
+| `ffde672` | GitHub sync and clone missing repos |
+| `c4b5c3b` | Status sort by urgency |
+| `71c9005` | Per-account GitHub folders |
+| `26e557f` | Live 5h / 7d usage meters |
+| `177138b` | Commit meter fed from the GitHub contribution graph |
+| `8f66fc5` | Agent Heavy rework and Agent Team mode |
+| `5989884` | Projects tab replaces the Launch tab |
+| `47206d6` | Per-account repo scoping, contribution-scope warning, session scrub |
+| `084df04` | Remote-sync check before every launch |
+| `d4c2e5e` | New Project interview and kickoff |
+| `6ec0913` | Shared-with-me workspace per account |
+| `c4504e2` | Ahead/behind for branches pushed without an upstream |
+| `b0827a2` | Refresh, Fetch and Check GitHub folded into one Refresh |
+
+## License
+
+[MIT](LICENSE)
