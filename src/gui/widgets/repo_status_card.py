@@ -162,7 +162,17 @@ class RepoStatusCard(QWidget):
                 parts.append(f"{status.stash_count} stash")
             if not parts:
                 parts.append("Clean")
+            # Ahead/behind above are as of the last successful fetch.
+            if status.fetch_error:
+                parts.append("fetch failed")
         self.detail_label.setText(" | ".join(parts))
+        tips = []
+        if status.fetch_error:
+            tips.append(f"Fetch failed: {status.fetch_error}")
+        if status.inferred_upstream:
+            tips.append(f"No upstream configured; compared with "
+                        f"{status.inferred_upstream} (Push/Sync will set it)")
+        self.detail_label.setToolTip("\n".join(tips))
 
         # Dot color
         if status.error:

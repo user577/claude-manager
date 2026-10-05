@@ -26,6 +26,13 @@ class RepoStatus:
     stash_count: int = 0
     diverged: bool = False
     has_remote: bool = False
+    # Remote branch ahead/behind was measured against when the branch has no
+    # upstream configured (e.g. pushed with `git push origin main`, no -u).
+    # Empty when a real upstream exists or there's nothing to compare with.
+    inferred_upstream: str = ""
+    # Why the fetch before this scan failed. Kept apart from `error` so a dead
+    # remote doesn't paint over an otherwise good local scan.
+    fetch_error: str | None = None
     last_commit: str = ""
     # Committer time as a Unix timestamp, for sorting. Not an ISO string: those
     # carry the commit's own UTC offset (-05:00, -06:00, +02:00, Z), so they
@@ -89,11 +96,47 @@ def _git(repo_path: str, *args: str, timeout: int = 5) -> subprocess.CompletedPr
     )
 
 
+def inferred_upstream(repo_path: str, branch: str) -> str | None:
+    """The remote-tracking ref a branch with no upstream would track, if any.
+
+    `git status` only reports ahead/behind against a configured upstream, so
+    a branch pushed without -u reads as in sync forever. This finds the ref it
+    almost certainly means: <remote>/<branch>, where remote is origin, or the
+    only remote when there's no origin. None if detached or never pushed.
+    """
+    if not branch or branch in ("HEAD", "(detached)", "?"):
+        return None
+    r = _git(repo_path, "remote")
+    remotes = r.stdout.split() if r.returncode == 0 else []
+    if "origin" in remotes:
+        remote = "origin"
+    elif len(remotes) == 1:
+        remote = remotes[0]
+    else:
+        return None
+    ref = f"{remote}/{branch}"
+    r = _git(repo_path, "rev-parse", "--verify", "--quiet", f"refs/remotes/{ref}")
+    return ref if r.returncode == 0 else None
+
+
+def _fetch(repo_path: str, timeout: int) -> str | None:
+    """Fetch the default remote; the first line of the failure, else None."""
+    try:
+        r = _git(repo_path, "fetch", "--quiet", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"fetch timed out after {timeout}s"
+    except Exception as e:
+        return str(e)
+    if r.returncode != 0:
+        return (r.stderr.strip() or "fetch failed").splitlines()[0]
+    return None
+
+
 def scan_one(repo: RepoInfo, fetch: bool = False) -> RepoStatus:
     status = RepoStatus(path=repo.path, label=repo.label)
     try:
         if fetch:
-            _git(repo.path, "fetch", "--quiet", timeout=15)
+            status.fetch_error = _fetch(repo.path, timeout=15)
 
         # One call: branch + upstream + ahead/behind + modified/untracked counts
         r = _git(repo.path, "status", "--porcelain=v2", "--branch", timeout=10)
@@ -121,6 +164,15 @@ def scan_one(repo: RepoInfo, fetch: bool = False) -> RepoStatus:
         status.modified_count = modified
         status.untracked_count = untracked
         status.dirty = (modified + untracked) > 0
+        if not status.has_remote:
+            ref = inferred_upstream(repo.path, status.branch)
+            if ref:
+                r = _git(repo.path, "rev-list", "--left-right", "--count", f"HEAD...{ref}")
+                counts = r.stdout.split()
+                if r.returncode == 0 and len(counts) == 2:
+                    status.ahead, status.behind = int(counts[0]), int(counts[1])
+                    status.has_remote = True
+                    status.inferred_upstream = ref
         status.diverged = status.ahead > 0 and status.behind > 0
         status.last_worktree_ts = newest_mtime(repo.path, changed_paths)
 
@@ -262,15 +314,11 @@ def verify_remote_sync(repo: RepoInfo, timeout: int = 15,
     if endpoint and probe(*endpoint) is False:
         fetch_error = f"offline — couldn't reach {endpoint[0]}"
     else:
-        try:
-            r = _git(repo.path, "fetch", "--quiet", timeout=timeout)
-            if r.returncode != 0:
-                fetch_error = (r.stderr.strip() or "fetch failed").splitlines()[0]
-        except subprocess.TimeoutExpired:
-            fetch_error = f"fetch timed out after {timeout}s"
-        except Exception as e:
-            fetch_error = str(e)
+        fetch_error = _fetch(repo.path, timeout)
     status = scan_one(repo, fetch=False)
+    status.fetch_error = fetch_error
+    if fetch_error and not status.error:
+        status.error = fetch_error
     if fetch_error and not status.error:
         status.error = fetch_error
     return status
