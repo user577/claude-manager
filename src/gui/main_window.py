@@ -176,6 +176,15 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+R"), self, self._refresh_git)
         QShortcut(QKeySequence("Ctrl+Return"), self, self.git_panel._on_commit)
 
+        # The Git tab is current from the start, so currentChanged never fires
+        # for it — without this the cards sat unscanned until Refresh. Runs
+        # after _populate_accounts (100ms), which may already have refreshed.
+        QTimer.singleShot(150, self._initial_refresh)
+
+    def _initial_refresh(self):
+        if not self._git_scanned and self.tabs.currentIndex() == self.TAB_GIT:
+            self._refresh_git()
+
     def _make_toolbar_label(self) -> QWidget:
         from PySide6.QtWidgets import QLabel
         lbl = QLabel(f"  {APP_DISPLAY_NAME}")
@@ -307,7 +316,7 @@ class MainWindow(QMainWindow):
         self.project_panel.refresh_repos()
         self._git_scanned = False
         if self.tabs.currentIndex() == self.TAB_GIT:
-            self.git_panel.scan_all()
+            self.git_panel.refresh()
             self._git_scanned = True
 
     def _on_account_changed(self, index: int):
@@ -446,7 +455,7 @@ class MainWindow(QMainWindow):
             "<tr><td><b>Ctrl+L</b></td><td>Launch selected repos tiled</td></tr>"
             "<tr><td><b>Ctrl+1</b></td><td>Switch to Git tab</td></tr>"
             "<tr><td><b>Ctrl+2</b></td><td>Switch to Projects tab</td></tr>"
-            "<tr><td><b>Ctrl+R</b></td><td>Refresh git status</td></tr>"
+            "<tr><td><b>Ctrl+R</b></td><td>Refresh: rescan, fetch, check GitHub</td></tr>"
             "<tr><td><b>Ctrl+Enter</b></td><td>Commit all dirty repos</td></tr>"
             "</table>"
         )
@@ -458,8 +467,8 @@ class MainWindow(QMainWindow):
             dlg.apply()
             self.settings.save()
             self.git_panel._build_cards()
+            self.git_panel.scan_all()  # repo set may have changed
             self.project_panel.refresh_repos()
-            self._git_scanned = False
             self._populate_accounts()  # clear any "no folder" warnings
             # Goal or repo set may have changed — re-evaluate the commit meter.
             self.commit_meter.set_goal(self.settings.commit_goal)
@@ -467,14 +476,14 @@ class MainWindow(QMainWindow):
 
     def _refresh_git(self):
         self.tabs.setCurrentIndex(self.TAB_GIT)
-        self.git_panel.scan_all()
+        self.git_panel.refresh()
         self._git_scanned = True
 
     def _on_tab_changed(self, index: int):
         if index == self.TAB_GIT:
             self._populate_accounts()
             if not self._git_scanned:
-                self.git_panel.scan_all()
+                self.git_panel.refresh()
                 self._git_scanned = True
         elif index == self.TAB_PROJECTS:
             self.project_panel.ensure_loaded()
