@@ -165,7 +165,8 @@ class GitStatusPanel(QWidget):
         self.sort_combo.addItem("Status (urgent first)", "status")
         self.sort_combo.setFixedWidth(170)
         self.sort_combo.setToolTip(
-            "Sort repos by name, last commit date, or status urgency\n"
+            "Sort repos by name, latest activity (last commit or uncommitted\n"
+            "change, whichever is newer), or status urgency\n"
             f"({URGENCY_TOOLTIP})"
         )
         # Restore saved sort preference
@@ -565,9 +566,9 @@ class GitStatusPanel(QWidget):
         sort_key = self.sort_combo.currentData()
         paths = list(self.cards.keys())
         if sort_key == "date":
-            # Sort by last commit time descending; repos without one (0) go last
+            # Newest commit or uncommitted change first; unknown (0) goes last
             paths.sort(
-                key=lambda p: self._statuses[p].last_commit_ts
+                key=lambda p: self._statuses[p].last_activity_ts
                 if p in self._statuses else 0,
                 reverse=True,
             )

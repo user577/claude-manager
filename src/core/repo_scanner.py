@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import socket
 import subprocess
@@ -31,7 +32,53 @@ class RepoStatus:
     # don't compare correctly as text. Committer, not author, time so a rebase
     # or a pulled fork commit counts as recent activity.
     last_commit_ts: int = 0
+    # Newest mtime among uncommitted changes (modified, staged, untracked), so
+    # today's unsaved-to-git work counts as recent. 0 when the tree is clean.
+    last_worktree_ts: int = 0
     error: str | None = None
+
+    @property
+    def last_activity_ts(self) -> int:
+        """Latest of the last commit and any uncommitted change. Sort key."""
+        return max(self.last_commit_ts, self.last_worktree_ts)
+
+
+# Porcelain v2 entry lines carry a fixed number of space-separated fields
+# before the path: 8 for ordinary changes ("1"), 9 for renames/copies ("2",
+# whose path is followed by a tab and the original path), 10 for unmerged
+# ("u"), and 1 for untracked ("?").
+_PATH_FIELD = {"1": 8, "2": 9, "u": 10, "?": 1}
+
+
+def porcelain_v2_path(line: str) -> str | None:
+    """The worktree path of a porcelain v2 entry line, or None for headers."""
+    skip = _PATH_FIELD.get(line[:1])
+    if skip is None:
+        return None
+    parts = line.split(" ", skip)
+    if len(parts) <= skip:
+        return None
+    path = parts[skip]
+    if line[0] == "2":
+        path = path.split("\t", 1)[0]
+    return path
+
+
+def newest_mtime(repo_path: str, rel_paths: list[str]) -> int:
+    """Newest mtime among `rel_paths`, ignoring ones that can't be stat'd.
+
+    Deleted files have nothing to stat, and paths git had to C-quote (odd
+    characters) won't resolve as written — both are skipped rather than
+    guessed at. An untracked directory reports its own mtime, which moves
+    when entries are added or removed directly inside it.
+    """
+    newest = 0
+    for rel in rel_paths:
+        try:
+            newest = max(newest, int(os.stat(os.path.join(repo_path, rel)).st_mtime))
+        except OSError:
+            continue
+    return newest
 
 
 def _git(repo_path: str, *args: str, timeout: int = 5) -> subprocess.CompletedProcess:
@@ -52,7 +99,11 @@ def scan_one(repo: RepoInfo, fetch: bool = False) -> RepoStatus:
         r = _git(repo.path, "status", "--porcelain=v2", "--branch", timeout=10)
         modified = 0
         untracked = 0
+        changed_paths = []
         for line in r.stdout.splitlines():
+            path = porcelain_v2_path(line)
+            if path:
+                changed_paths.append(path)
             if line.startswith("# branch.head "):
                 status.branch = line[len("# branch.head "):].strip() or "HEAD"
             elif line.startswith("# branch.upstream "):
@@ -71,6 +122,7 @@ def scan_one(repo: RepoInfo, fetch: bool = False) -> RepoStatus:
         status.untracked_count = untracked
         status.dirty = (modified + untracked) > 0
         status.diverged = status.ahead > 0 and status.behind > 0
+        status.last_worktree_ts = newest_mtime(repo.path, changed_paths)
 
         # One call: last commit hash + subject + committer timestamp (separated by US char)
         r = _git(repo.path, "log", "-1", "--format=%h %s%x1f%ct")
