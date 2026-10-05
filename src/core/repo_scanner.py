@@ -88,6 +88,29 @@ def newest_mtime(repo_path: str, rel_paths: list[str]) -> int:
     return newest
 
 
+def newest_first(repos: list[RepoInfo],
+                 known: dict[str, RepoStatus]) -> list[RepoInfo]:
+    """`repos` ordered most recently active first, for the scan queue.
+
+    The pool takes work in submission order, so this is the order cards come
+    back in: the repos in use now update first, the dormant ones last. Each
+    repo's age is the newer of its last scan's activity and its HEAD reflog's
+    mtime — a cheap stat that moves on commit, checkout, pull and reset, so
+    work done since the last scan (or a first scan, with nothing known yet)
+    still ranks right. Ties keep their existing order.
+    """
+    def recency(repo: RepoInfo) -> int:
+        status = known.get(repo.path)
+        ts = status.last_activity_ts if status else 0
+        try:
+            ts = max(ts, int(os.stat(
+                os.path.join(repo.path, ".git", "logs", "HEAD")).st_mtime))
+        except OSError:  # no reflog yet, or .git is a worktree/submodule file
+            pass
+        return ts
+    return sorted(repos, key=recency, reverse=True)
+
+
 def _git(repo_path: str, *args: str, timeout: int = 5) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-C", repo_path, *args],

@@ -3,7 +3,7 @@ import subprocess
 
 from src.config.settings import RepoInfo
 from src.core.repo_scanner import (
-    RepoStatus, newest_mtime, porcelain_v2_path, scan_one,
+    RepoStatus, newest_first, newest_mtime, porcelain_v2_path, scan_one,
 )
 
 SHA = "0" * 40
@@ -35,6 +35,33 @@ def test_activity_is_the_newer_of_commit_and_worktree():
     assert s.last_activity_ts == 300
     s.last_worktree_ts = 0
     assert s.last_activity_ts == 100
+
+
+def _fake_repo(root, name, reflog_ts=None):
+    path = root / name
+    (path / ".git" / "logs").mkdir(parents=True)
+    if reflog_ts is not None:
+        head = path / ".git" / "logs" / "HEAD"
+        head.write_text("")
+        os.utime(head, (reflog_ts, reflog_ts))
+    return RepoInfo(path=str(path), label=name)
+
+
+def test_scan_queue_runs_newest_first(tmp_path):
+    stale = _fake_repo(tmp_path, "stale", reflog_ts=1_000_000)
+    committed = _fake_repo(tmp_path, "committed", reflog_ts=3_000_000)
+    edited = _fake_repo(tmp_path, "edited", reflog_ts=1_000_000)
+    no_reflog = _fake_repo(tmp_path, "no_reflog")
+    known = {
+        # Uncommitted edits seen by the last scan outrank the reflog...
+        edited.path: RepoStatus(path=edited.path, label="edited",
+                                last_worktree_ts=2_000_000),
+        # ...and a commit since the last scan outranks the stale status.
+        committed.path: RepoStatus(path=committed.path, label="committed",
+                                   last_commit_ts=500),
+    }
+    order = newest_first([no_reflog, stale, edited, committed], known)
+    assert [r.label for r in order] == ["committed", "edited", "stale", "no_reflog"]
 
 
 def _git(path, *args):

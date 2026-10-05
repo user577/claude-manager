@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 from src.config.settings import Settings, RepoInfo
 from src.core.repo_scanner import (
     RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo,
-    SyncCheckThread, SyncReport, classify_sync,
+    SyncCheckThread, SyncReport, classify_sync, newest_first,
 )
 from src.core.git_operations import GitWorker, CloneWorker
 from src.core.process_launcher import (
@@ -493,7 +493,8 @@ class GitStatusPanel(QWidget):
         self._build_cards()
 
     def _start_scanner(self, fetch: bool):
-        repos = [r for r in self.settings.repos if r.exists()]
+        repos = newest_first([r for r in self.settings.repos if r.exists()],
+                             self._statuses)
         self._scan_count = 0
         self._scan_total = len(repos)
         self._scan_prefix = "Fetching" if fetch else "Scanning"
