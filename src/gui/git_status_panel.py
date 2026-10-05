@@ -565,11 +565,10 @@ class GitStatusPanel(QWidget):
         sort_key = self.sort_combo.currentData()
         paths = list(self.cards.keys())
         if sort_key == "date":
-            # Sort by last_commit_date descending; repos without dates go last
+            # Sort by last commit time descending; repos without one (0) go last
             paths.sort(
-                key=lambda p: self._statuses[p].last_commit_date
-                if p in self._statuses and self._statuses[p].last_commit_date
-                else "",
+                key=lambda p: self._statuses[p].last_commit_ts
+                if p in self._statuses else 0,
                 reverse=True,
             )
         elif sort_key == "status":
