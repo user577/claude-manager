@@ -26,7 +26,11 @@ class RepoStatus:
     diverged: bool = False
     has_remote: bool = False
     last_commit: str = ""
-    last_commit_date: str = ""  # ISO 8601 for sorting
+    # Committer time as a Unix timestamp, for sorting. Not an ISO string: those
+    # carry the commit's own UTC offset (-05:00, -06:00, +02:00, Z), so they
+    # don't compare correctly as text. Committer, not author, time so a rebase
+    # or a pulled fork commit counts as recent activity.
+    last_commit_ts: int = 0
     error: str | None = None
 
 
@@ -68,13 +72,13 @@ def scan_one(repo: RepoInfo, fetch: bool = False) -> RepoStatus:
         status.dirty = (modified + untracked) > 0
         status.diverged = status.ahead > 0 and status.behind > 0
 
-        # One call: last commit hash + subject + ISO date (separated by US char)
-        r = _git(repo.path, "log", "-1", "--format=%h %s%x1f%aI")
+        # One call: last commit hash + subject + committer timestamp (separated by US char)
+        r = _git(repo.path, "log", "-1", "--format=%h %s%x1f%ct")
         out = r.stdout.strip()
         if "\x1f" in out:
-            commit, date = out.split("\x1f", 1)
+            commit, ts = out.rsplit("\x1f", 1)
             status.last_commit = commit
-            status.last_commit_date = date
+            status.last_commit_ts = int(ts) if ts.isdigit() else 0
         else:
             status.last_commit = out
 
