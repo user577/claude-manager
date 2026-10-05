@@ -97,6 +97,24 @@ def sync_prompt_lines(report: SyncReport) -> list[str]:
     return lines
 
 
+def pull_targets(repos, statuses: dict) -> list:
+    """Repos a Pull would fast-forward: scanned, behind, not diverged.
+
+    Unscanned repos are left out rather than pulled on spec — Refresh is how
+    to find out whether they're behind.
+    """
+    return [r for r in repos
+            if (s := statuses.get(r.path)) and not s.error
+            and s.behind > 0 and not s.diverged]
+
+
+def push_targets(repos, statuses: dict) -> list:
+    """Repos a Push would send: scanned, strictly ahead of a known remote."""
+    return [r for r in repos
+            if (s := statuses.get(r.path)) and not s.error and s.has_remote
+            and s.ahead > 0 and s.behind == 0]
+
+
 class GitStatusPanel(QWidget):
     # Emitted after a git operation finishes (commit/push/pull) so the toolbar
     # commit meter can refresh without polling.
@@ -138,17 +156,16 @@ class GitStatusPanel(QWidget):
         self.new_project_btn.clicked.connect(self._on_new_project)
         top_row.addWidget(self.new_project_btn)
 
+        # The one read-only control: local scan (instant), then fetch, then a
+        # GitHub check for uncloned repos. Everything that changes a repo is
+        # down in the action row, so this button is always safe to press.
         self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.setToolTip("Fast local rescan (uses cached fetch state)")
-        self.refresh_btn.clicked.connect(self.scan_all)
-        top_row.addWidget(self.refresh_btn)
-
-        self.fetch_refresh_btn = QPushButton("Fetch")
-        self.fetch_refresh_btn.setToolTip(
-            "Fetch all remotes, then refresh — slower but updates ahead/behind"
+        self.refresh_btn.setToolTip(
+            "Rescan every repo, fetch remotes to update ahead/behind, and check "
+            "GitHub for repos not cloned here (Ctrl+R). Changes nothing."
         )
-        self.fetch_refresh_btn.clicked.connect(lambda: self.scan_all(fetch=True))
-        top_row.addWidget(self.fetch_refresh_btn)
+        self.refresh_btn.clicked.connect(self.refresh)
+        top_row.addWidget(self.refresh_btn)
         layout.addLayout(top_row)
 
         # --- Search filter + sort ---
@@ -309,44 +326,37 @@ class GitStatusPanel(QWidget):
         commit_row.addWidget(self.auto_commit_btn)
         layout.addLayout(commit_row)
 
-        # --- Push / Sync row ---
+        # --- Pull / Push / Clone row ---
+        # Each button names exactly what it will touch: its count is the repos
+        # it acts on (ticked ones, if any are ticked), and it's disabled at 0
+        # or while a refresh or operation is running. Labels and tooltips are
+        # set in _update_action_buttons().
         action_row = QHBoxLayout()
 
-        self.push_btn = QPushButton("Push Ahead")
-        self.push_btn.setObjectName("pushBtn")
-        self.push_btn.setToolTip("Push repos that are strictly ahead (skips diverged repos)")
-        self.push_btn.clicked.connect(self._on_push)
-        action_row.addWidget(self.push_btn)
-
-        self.sync_btn = QPushButton("Fetch && Pull All")
+        self.sync_btn = QPushButton("Pull")
         self.sync_btn.setObjectName("syncBtn")
-        self.sync_btn.setToolTip("Safe: fetch + fast-forward pull only (never overwrites remote)")
         self.sync_btn.clicked.connect(self._on_sync)
         action_row.addWidget(self.sync_btn)
 
-        self.github_btn = QPushButton("Check GitHub")
-        self.github_btn.setStyleSheet(
-            "QPushButton { background: #6e40c9; color: #ffffff; border: none; font-weight: bold; }"
-            "QPushButton:hover { background: #8b5cf6; }"
-        )
-        self.github_btn.setToolTip(
-            "Find repos on your GitHub account that aren't cloned locally "
-            "(in a · shared view: repos you collaborate on)"
-        )
-        self.github_btn.clicked.connect(self._on_check_github)
-        action_row.addWidget(self.github_btn)
+        self.push_btn = QPushButton("Push")
+        self.push_btn.setObjectName("pushBtn")
+        self.push_btn.clicked.connect(self._on_push)
+        action_row.addWidget(self.push_btn)
 
-        self.clone_btn = QPushButton("Clone Missing")
-        self.clone_btn.setStyleSheet(
-            "QPushButton { background: #6e40c9; color: #ffffff; border: none; font-weight: bold; }"
-            "QPushButton:hover { background: #8b5cf6; }"
-        )
-        self.clone_btn.setToolTip("Clone all uncloned repos listed above")
+        self.clone_btn = QPushButton("Clone")
+        self.clone_btn.setObjectName("cloneBtn")
         self.clone_btn.clicked.connect(self._on_clone_missing)
-        self.clone_btn.hide()
         action_row.addWidget(self.clone_btn)
 
         self._pending_clones: list[RemoteRepo] = []
+        self._last_uncloned: set[str] = set()
+        # Refresh pipeline: None when idle, else "local" / "fetch" / "github".
+        # A request that arrives mid-pipeline is queued in _rerun ("local" or
+        # "full") rather than racing the running one.
+        self._stage: str | None = None
+        self._full_refresh = False
+        self._rerun: str | None = None
+        self._busy = False  # a commit/push/pull/clone batch is running
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setStyleSheet(
@@ -383,6 +393,9 @@ class GitStatusPanel(QWidget):
         self._build_cards()
 
     def _build_cards(self):
+        # Ticks survive a rebuild (a rescan after Pull, say) for repos that
+        # are still listed, so the selection keeps meaning what it did.
+        ticked = {p for p, c in self.cards.items() if c.selected}
         # Clear old cards. deleteLater() (not setParent(None)) so they're
         # destroyed instead of lingering as orphaned top-level widgets — an
         # orphaned card can briefly flash as its own "Claude Manager" window.
@@ -399,7 +412,11 @@ class GitStatusPanel(QWidget):
                 card.update_status(RepoStatus(
                     path=repo.path, label=repo.label, error="Path not found"))
             else:
-                card.update_status(RepoStatus(path=repo.path, label=repo.label))
+                # Last known state until the rescan replaces it, rather than
+                # every card flashing back to blank.
+                card.update_status(self._statuses.get(repo.path)
+                                   or RepoStatus(path=repo.path, label=repo.label))
+            card.set_selected(repo.path in ticked)
             card.launch_requested.connect(self._launch_single)
             card.launch_auto_requested.connect(self._launch_single_auto)
             card.agent_heavy_requested.connect(self._launch_agent_heavy)
@@ -418,9 +435,38 @@ class GitStatusPanel(QWidget):
         for worker in list(self._gate_workers):
             stop_worker(worker)
 
-    def scan_all(self, fetch: bool = False):
+    # --- Refresh pipeline ------------------------------------------------------
+    #
+    # refresh(): local scan -> fetch -> GitHub check (the Refresh button).
+    # scan_all(): local scan only — after an operation, where git already
+    # knows the result and a network round trip would add nothing.
+
+    def refresh(self):
+        self._request_scan("full")
+
+    def scan_all(self):
+        self._request_scan("local")
+
+    @property
+    def refreshing(self) -> bool:
+        return self._stage is not None
+
+    def _request_scan(self, kind: str):
+        if self._stage is not None:
+            self._rerun = "full" if "full" in (kind, self._rerun) else "local"
+            return
+        self._full_refresh = kind == "full"
+        if self._full_refresh:
+            # Re-derived by the GitHub stage; dropping it now means a stale
+            # list can't be cloned into a just-switched account's folder.
+            self._pending_clones = []
+        self._stage = "local"
         self.refresh_btn.setEnabled(False)
-        self.fetch_refresh_btn.setEnabled(False)
+        self._update_action_buttons()
+        self._prepare_repos()
+        self._start_scanner(fetch=False)
+
+    def _prepare_repos(self):
         # New projects get their real name here: their Claude session left it
         # in a marker file, and the folder can only be renamed once that
         # window is closed. Runs before sync_repos so the renamed folder is
@@ -444,13 +490,14 @@ class GitStatusPanel(QWidget):
                 self.log.log_info(
                     f"Dropped {removed} repo(s) outside this account's folder"
                 )
-        self._scan_count = 0
-        self._scan_total = len(self.settings.repos)
-        prefix = "Fetching" if fetch else "Scanning"
-        self.scan_label.setText(f"{prefix} 0/{self._scan_total}...")
-        self._scan_prefix = prefix
         self._build_cards()
-        repos = list(self.settings.repos)
+
+    def _start_scanner(self, fetch: bool):
+        repos = [r for r in self.settings.repos if r.exists()]
+        self._scan_count = 0
+        self._scan_total = len(repos)
+        self._scan_prefix = "Fetching" if fetch else "Scanning"
+        self.scan_label.setText(f"{self._scan_prefix} 0/{self._scan_total}...")
         # Network-bound fetch parallelizes well; local-only scan needs fewer workers
         workers = 16 if fetch else 8
         self._scanner = RepoScannerThread(repos, fetch=fetch, max_workers=workers, parent=self)
@@ -468,11 +515,33 @@ class GitStatusPanel(QWidget):
             self.cards[status.path].update_status(status)
 
     def _on_scan_complete(self):
-        self.scan_label.setText("")
-        self.refresh_btn.setEnabled(True)
-        self.fetch_refresh_btn.setEnabled(True)
         self._scanner = None
         self._reorder_cards()
+        if self._stage == "local" and self._full_refresh:
+            self._stage = "fetch"
+            self._start_scanner(fetch=True)
+            return
+        if self._stage == "fetch":
+            failed = [s.label for s in self._statuses.values()
+                      if s.fetch_error and s.path in self.cards]
+            if failed:
+                self.log.log_err(
+                    f"Fetch failed for {len(failed)} repo(s): {', '.join(sorted(failed))} "
+                    "— their ahead/behind is from the last good fetch"
+                )
+            self._stage = "github"
+            self._start_github_check()
+            return
+        self._finish_refresh()
+
+    def _finish_refresh(self):
+        self._stage = None
+        self.scan_label.setText("")
+        self.refresh_btn.setEnabled(not self._busy)
+        self._update_action_buttons()
+        rerun, self._rerun = self._rerun, None
+        if rerun:
+            self._request_scan(rerun)
 
     def _refresh_tag_bar(self):
         for btn in self.tag_buttons.values():
@@ -635,9 +704,50 @@ class GitStatusPanel(QWidget):
 
     def _on_selection_changed(self):
         count = len(self._selected_repos())
-        self.launch_tiled_btn.setEnabled(count > 0)
+        self.launch_tiled_btn.setEnabled(count > 0 and not self._busy)
         self.launch_tiled_btn.setText(
             f"Launch Tiled ({count})" if count else "Launch Tiled"
+        )
+        self._update_action_buttons()
+
+    def _action_scope(self) -> tuple[list[RepoInfo], bool]:
+        """Repos Pull/Push consider: the ticked ones if any, else all."""
+        ticked = self._selected_repos()
+        if ticked:
+            return ticked, True
+        return [r for r in self.settings.repos if r.exists()], False
+
+    def _update_action_buttons(self):
+        """Relabel Pull/Push/Clone with what they'd act on right now."""
+        scope, ticked = self._action_scope()
+        pull = pull_targets(scope, self._statuses)
+        push = push_targets(scope, self._statuses)
+        # Counts are only trustworthy once a scan has finished; mid-refresh
+        # they'd be a mix of old and new state (that's how a Pull once took
+        # 59 repos — every unscanned one counted as possibly behind).
+        idle = not self._busy and not self.refreshing
+        where = "ticked repos" if ticked else "repos"
+        for btn, verb, targets, tip in (
+            (self.sync_btn, "Pull", pull,
+             f"Fetch and fast-forward the {where} that are behind. Never "
+             "overwrites local work; diverged repos are skipped."),
+            (self.push_btn, "Push", push,
+             f"Push the {where} that are ahead. Repos that are also behind "
+             "(diverged) are skipped — pull or resolve those first."),
+        ):
+            btn.setText(f"{verb} ({len(targets)})" if targets else verb)
+            btn.setEnabled(idle and bool(targets))
+            names = ", ".join(r.label for r in targets[:12])
+            more = f" +{len(targets) - 12} more" if len(targets) > 12 else ""
+            btn.setToolTip(tip + (f"\n\n{names}{more}" if targets else ""))
+        n = len(self._pending_clones)
+        self.clone_btn.setText(f"Clone ({n})" if n else "Clone")
+        self.clone_btn.setEnabled(idle and n > 0)
+        names = ", ".join(r.name for r in self._pending_clones[:12])
+        self.clone_btn.setToolTip(
+            "Clone the repos on your GitHub account (in a · shared view: repos "
+            "shared with you) that aren't in this folder yet. Refresh checks."
+            + (f"\n\n{names}" if n else "")
         )
 
     def _save_launch_prefs(self):
@@ -713,20 +823,13 @@ class GitStatusPanel(QWidget):
         self._on_selection_changed()
 
     def _set_buttons_enabled(self, enabled: bool):
+        self._busy = not enabled
         self.commit_btn.setEnabled(enabled and bool(self.commit_msg.text().strip()))
         self.auto_commit_btn.setEnabled(enabled)
-        self.push_btn.setEnabled(enabled)
-        self.sync_btn.setEnabled(enabled)
-        self.github_btn.setEnabled(enabled)
-        self.clone_btn.setEnabled(enabled)
-        self.refresh_btn.setEnabled(enabled)
-        self.fetch_refresh_btn.setEnabled(enabled)
+        self.refresh_btn.setEnabled(enabled and not self.refreshing)
         self.cancel_btn.setVisible(not enabled)
-        # Re-enabling defers to the selection, not the blanket flag.
-        if enabled:
-            self._on_selection_changed()
-        else:
-            self.launch_tiled_btn.setEnabled(False)
+        # Launch Tiled and Pull/Push/Clone defer to selection and scan state.
+        self._on_selection_changed()
 
     def _start_operation(self, operation: str, repos, message: str = ""):
         if not repos:
@@ -800,74 +903,45 @@ class GitStatusPanel(QWidget):
         self.log.log_info(f"Committing {len(dirty)} dirty repos...")
         self._start_operation("commit", dirty, msg)
 
+    def _log_diverged(self, scope):
+        diverged = [r.label for r in scope
+                    if (s := self._statuses.get(r.path)) and s.diverged]
+        if diverged:
+            self.log.log_info(
+                f"Skipping diverged ({len(diverged)}) — needs a manual merge "
+                f"or rebase: {', '.join(diverged)}"
+            )
+
     def _on_push(self):
-        # Only push repos that are strictly ahead — skip diverged or behind
-        pushable = []
-        skipped = []
-        for r in self.settings.repos:
-            s = self._statuses.get(r.path)
-            if not s or not s.has_remote:
-                continue
-            if s.diverged or s.behind > 0:
-                skipped.append(r.label)
-            elif s.ahead > 0:
-                pushable.append(r)
-
-        if skipped:
-            self.log.log_info(f"Skipping diverged/behind: {', '.join(skipped)}")
+        scope, _ = self._action_scope()
+        pushable = push_targets(scope, self._statuses)
         if not pushable:
-            self.log.log_info("No repos are ahead — nothing to push")
-            return
-
+            return  # button is disabled at 0; guards a stale click
+        self._log_diverged(scope)
         names = ", ".join(r.label for r in pushable)
-        self.log.log_info(f"Pushing {len(pushable)} repos: {names}")
+        self.log.log_info(f"Pushing {len(pushable)} repo(s): {names}")
         self._start_operation("push", pushable)
 
     def _on_sync(self):
-        # Only repos with something to pull — skip clean repos that are already in sync.
-        # Repos without scan data fall through (might genuinely be behind).
-        pullable = []
-        skipped_synced = 0
-        skipped_diverged = []
-        for r in self.settings.repos:
-            if not r.exists():
-                continue
-            s = self._statuses.get(r.path)
-            if s is None:
-                pullable.append(r)
-                continue
-            if s.diverged:
-                skipped_diverged.append(r.label)
-                continue
-            if s.behind > 0:
-                pullable.append(r)
-            else:
-                skipped_synced += 1
-
-        if skipped_diverged:
-            self.log.log_info(
-                f"Skipping diverged ({len(skipped_diverged)}): "
-                f"{', '.join(skipped_diverged)}"
-            )
-        if skipped_synced:
-            self.log.log_info(f"Skipping {skipped_synced} already-synced repo(s)")
+        scope, _ = self._action_scope()
+        pullable = pull_targets(scope, self._statuses)
         if not pullable:
-            self.log.log_info("Nothing to fetch & pull")
-            return
-
-        self.log.log_info(f"Fetching & pulling {len(pullable)} repo(s)...")
+            return  # button is disabled at 0; guards a stale click
+        self._log_diverged(scope)
+        names = ", ".join(r.label for r in pullable)
+        self.log.log_info(f"Pulling {len(pullable)} repo(s): {names}")
         self._start_operation("fetch_pull", pullable)
 
-    def _on_check_github(self):
-        """Query GitHub for repos not cloned locally."""
-        self.github_btn.setEnabled(False)
+    def _start_github_check(self):
+        """Last Refresh stage: query GitHub for repos not cloned locally."""
         # The shared workspace looks for repos shared with this user instead.
         acct = self.settings.active()
         collaborator = acct is not None and acct.shared
-        self.log.log_info(
-            "Checking GitHub for uncloned shared repos..." if collaborator
-            else "Checking GitHub for uncloned repos..."
-        )
+        if not self.settings.github_dir:
+            # No folder to compare against or clone into.
+            self._finish_refresh()
+            return
+        self.scan_label.setText("Checking GitHub...")
 
         # Collect local repo folder names
         github_dir = Path(self.settings.github_dir)
@@ -884,24 +958,19 @@ class GitStatusPanel(QWidget):
         self._gh_sync.start()
 
     def _on_github_sync_done(self, missing: list, errors: list):
-        self.github_btn.setEnabled(True)
         self._gh_sync = None
-
-        if errors:
-            for e in errors:
-                self.log.log_err(e)
-            return
-
-        if not missing:
-            self.log.log_ok("All GitHub repos are cloned locally")
-            self._pending_clones = []
-            self.clone_btn.hide()
-            return
-
-        self._pending_clones = missing
-        names = ", ".join(r.name for r in missing)
-        self.log.log_info(f"Uncloned ({len(missing)}): {names}")
-        self.clone_btn.show()
+        for e in errors:
+            self.log.log_err(f"GitHub check: {e}")
+        if not errors:
+            # Log only when the list changes, so every Refresh doesn't repeat it.
+            if {r.name for r in missing} != self._last_uncloned:
+                if missing:
+                    names = ", ".join(r.name for r in missing)
+                    self.log.log_info(
+                        f"On GitHub but not cloned here ({len(missing)}): {names}")
+                self._last_uncloned = {r.name for r in missing}
+            self._pending_clones = missing
+        self._finish_refresh()
 
     def _on_clone_missing(self):
         if not self._pending_clones:
@@ -913,7 +982,8 @@ class GitStatusPanel(QWidget):
             for r in self._pending_clones
         ]
         self._pending_clones = []
-        self.clone_btn.hide()
+        self._last_uncloned = set()
+        self.log.log_info(f"Cloning {len(clone_list)} repo(s)...")
 
         self._set_buttons_enabled(False)
         self.progress.setRange(0, len(clone_list))
@@ -1078,6 +1148,7 @@ class GitStatusPanel(QWidget):
         self._statuses[status.path] = status
         if status.path in self.cards:
             self.cards[status.path].update_status(status)
+        self._update_action_buttons()
 
     def _on_gate_checked(self, statuses: list):
         worker = self.sender()

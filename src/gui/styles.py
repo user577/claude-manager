@@ -83,6 +83,22 @@ QPushButton#syncBtn {
 QPushButton#syncBtn:hover {
     background-color: #5ed6c2;
 }
+QPushButton#cloneBtn {
+    background-color: #6e40c9;
+    color: #ffffff;
+    border: none;
+}
+QPushButton#cloneBtn:hover {
+    background-color: #8b5cf6;
+}
+/* The ID rules above outrank the generic QPushButton:disabled, so without
+   these a disabled Pull/Push/Commit kept its colour and looked clickable. */
+QPushButton#launchBtn:disabled, QPushButton#commitBtn:disabled,
+QPushButton#pushBtn:disabled, QPushButton#syncBtn:disabled,
+QPushButton#cloneBtn:disabled {
+    background-color: #3c3c3c;
+    color: #6e6e6e;
+}
 QLineEdit {
     background-color: #3c3c3c;
     color: #cccccc;
