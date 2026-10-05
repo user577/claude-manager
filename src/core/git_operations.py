@@ -6,6 +6,7 @@ from PySide6.QtCore import QThread, Signal
 
 from src.constants import PYC_SKIP_DIRS
 from src.core.logger import log
+from src.core.repo_scanner import inferred_upstream
 
 
 def pyc_cleanup(repo_path: str) -> int:
@@ -75,8 +76,27 @@ def commit_repo(repo_path: str, message: str) -> tuple[bool, str]:
     return ok, log + out
 
 
+def ensure_upstream(repo_path: str) -> str:
+    """Point a branch with no upstream at its inferred remote branch.
+
+    Plain `git push` / `git pull` refuse to run without one, and the scanner
+    already treats <remote>/<branch> as the upstream (see inferred_upstream),
+    so make git agree. Returns a log line when it set one, else "".
+    """
+    if _run_git(repo_path, "rev-parse", "--abbrev-ref", "@{u}")[0]:
+        return ""
+    ok, branch = _run_git(repo_path, "symbolic-ref", "--short", "HEAD")
+    ref = inferred_upstream(repo_path, branch) if ok else None
+    if not ref:
+        return ""
+    ok, out = _run_git(repo_path, "branch", f"--set-upstream-to={ref}")
+    return f"Set upstream to {ref}\n" if ok else f"Couldn't set upstream to {ref}: {out}\n"
+
+
 def push_repo(repo_path: str) -> tuple[bool, str]:
-    return _run_git(repo_path, "push", timeout=60)
+    note = ensure_upstream(repo_path)
+    ok, out = _run_git(repo_path, "push", timeout=60)
+    return ok, note + out
 
 
 def fetch_repo(repo_path: str) -> tuple[bool, str]:
@@ -84,7 +104,9 @@ def fetch_repo(repo_path: str) -> tuple[bool, str]:
 
 
 def pull_repo(repo_path: str) -> tuple[bool, str]:
-    return _run_git(repo_path, "pull", "--ff-only", timeout=60)
+    note = ensure_upstream(repo_path)
+    ok, out = _run_git(repo_path, "pull", "--ff-only", timeout=60)
+    return ok, note + out
 
 
 def clone_repo(clone_url: str, dest_path: str) -> tuple[bool, str]:
