@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
@@ -43,15 +44,53 @@ def _is_under(path: str, folder: str) -> bool:
     return p != f and p.startswith(f + os.sep)
 
 
+def root_commit(path: str) -> str:
+    """The repo's root commit hash, or "" if it has none (or isn't readable).
+
+    Survives a folder rename, so it is how a repo whose folder vanished is
+    recognised under its new name. A history with several roots (merged
+    unrelated histories) is keyed on the lowest hash so the answer is stable.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", path, "rev-list", "--max-parents=0", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    roots = proc.stdout.split() if proc.returncode == 0 else []
+    return min(roots) if roots else ""
+
+
 @dataclass
 class RepoInfo:
     path: str
     label: str
     enabled: bool = True
     tags: list[str] = field(default_factory=list)
+    # Root commit, remembered while the folder exists so a rename made
+    # outside the app can be matched back to this entry. "" until known.
+    root: str = ""
 
     def exists(self) -> bool:
         return Path(self.path).is_dir()
+
+
+@dataclass
+class RepoSync:
+    """What ``GitHubAccount.sync_repos`` changed."""
+    added: int = 0
+    foreign: list[RepoInfo] = field(default_factory=list)
+    missing: list[RepoInfo] = field(default_factory=list)
+    moved: list[tuple[str, str]] = field(default_factory=list)
+    # A root commit was recorded: nothing visible changed, but save anyway.
+    learned: bool = False
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.foreign or self.missing or self.moved
+                    or self.learned)
 
 
 @dataclass
@@ -103,20 +142,24 @@ class GitHubAccount:
 
     def discover_repos(self) -> int:
         """Scan this account's folder for git repos. Returns count added."""
+        return len(self._discover())
+
+    def _discover(self) -> list[RepoInfo]:
         if not self.folder:
-            return 0
+            return []
         folder = Path(self.folder)
         if not folder.is_dir():
-            return 0
+            return []
         known = {_norm(r.path) for r in self.repos}
-        added = 0
+        added: list[RepoInfo] = []
         for child in sorted(folder.iterdir()):
             if child.is_dir() and (child / ".git").exists():
                 p = str(child)
                 if _norm(p) not in known:
-                    self.repos.append(RepoInfo(path=p, label=child.name))
+                    repo = RepoInfo(path=p, label=child.name)
+                    self.repos.append(repo)
+                    added.append(repo)
                     known.add(_norm(p))
-                    added += 1
         return added
 
     def prune_foreign_repos(self) -> list[RepoInfo]:
@@ -142,15 +185,57 @@ class GitHubAccount:
         self.repos = keep
         return dropped
 
-    def sync_repos(self) -> tuple[int, int]:
-        """Scope the repo list to this account's folder.
+    def sync_repos(self) -> RepoSync:
+        """Scope the repo list to what is actually in this account's folder.
 
-        Prunes anything outside the folder, then discovers anything new inside
-        it. Returns ``(added, removed)``.
+        Prunes anything outside the folder, discovers anything new inside it,
+        and drops entries whose folder is gone. A gone entry whose root commit
+        matches exactly one newly found folder was renamed outside the app
+        (Explorer, or a Claude session), so it moves to the new path and keeps
+        its tags instead of being dropped and rediscovered.
+
+        Like the foreign prune, nothing is dropped while the folder itself is
+        unreachable: an unplugged drive makes every repo look missing.
         """
-        removed = self.prune_foreign_repos()
-        added = self.discover_repos()
-        return added, len(removed)
+        result = RepoSync(foreign=self.prune_foreign_repos())
+        if not self.folder or not Path(self.folder).is_dir():
+            return result
+
+        missing = [r for r in self.repos if not r.exists()]
+        new = self._discover()
+        result.added = len(new)
+
+        # Learn roots while the folders exist, so they are already known if
+        # one disappears later. A repo with no commits yet stays "" and is
+        # retried next time; everything else is looked up once.
+        unknown = [r for r in self.repos if not r.root and r.exists()]
+        if unknown:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for repo, root in zip(unknown,
+                                      pool.map(root_commit,
+                                               [r.path for r in unknown])):
+                    repo.root = root
+            result.learned = any(r.root for r in unknown)
+        if not missing:
+            return result
+
+        moved_into: set[int] = set()
+        for gone in missing:
+            if not gone.root:
+                continue
+            same = [r for r in new if r.root == gone.root]
+            if len(same) != 1 or [m.root for m in missing].count(gone.root) != 1:
+                continue  # ambiguous (e.g. two clones of one upstream)
+            target = same[0]
+            result.moved.append((gone.path, target.path))
+            gone.path, gone.label = target.path, target.label
+            moved_into.add(id(target))
+
+        result.added -= len(moved_into)
+        result.missing = [r for r in missing if not r.exists()]
+        self.repos = [r for r in self.repos
+                      if id(r) not in moved_into and r.exists()]
+        return result
 
 
 @dataclass(init=False)
@@ -406,10 +491,10 @@ class Settings:
         if a is not None:
             a.discover_repos()
 
-    def sync_repos(self) -> tuple[int, int]:
-        """Scope the active account's repos to its folder. ``(added, removed)``."""
+    def sync_repos(self) -> RepoSync:
+        """Scope the active account's repos to its folder."""
         a = self.active()
-        return a.sync_repos() if a is not None else (0, 0)
+        return a.sync_repos() if a is not None else RepoSync()
 
     def prune_all_accounts(self) -> dict[str, list[RepoInfo]]:
         """Scope *every* account's repo list to its own folder.

@@ -231,6 +231,7 @@ gh auth refresh -h github.com -s read:user
 Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 ```bash
+uv python install 3.12                        # once: a uv-managed Python, see below
 uv sync --python 3.12 --python-preference only-managed
 uv run python build_installer.py              # PyInstaller bundle + installer
 uv run python build_installer.py --skip-inno  # bundle only
@@ -242,12 +243,14 @@ Output: `Output/ClaudeManager-Setup-1.0.0.exe`.
 that's doing the build. Shipping someone else's copy (for example Git's) produces an app
 that starts fine but can't make HTTPS calls, so the usage meters sit at "Offline". A plain
 `uv sync` can pick up a system Python, and the check then stops the build on purpose.
+`uv python install` alone isn't enough: `uv sync` keeps reusing an existing `.venv` built
+on a system Python, so keep the `--python-preference only-managed` flag.
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest        # 152 tests
+uv run pytest        # 157 tests
 uv run python main.py
 ```
 

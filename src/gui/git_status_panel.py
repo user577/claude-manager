@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QProgressBar, QComboBox, QMessageBox, QInputDialog,
 )
 
-from src.config.settings import Settings, RepoInfo
+from src.config.settings import Settings, RepoInfo, RepoSync
 from src.core.repo_scanner import (
     RepoScannerThread, RepoStatus, GitHubSyncThread, RemoteRepo,
     SyncCheckThread, SyncReport, classify_sync, newest_first,
@@ -79,6 +79,21 @@ def _urgency_rank(status) -> int:
 
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def log_repo_sync(log, sync: RepoSync):
+    """Report what ``Settings.sync_repos`` changed in the repo list."""
+    for old, new in sync.moved:
+        log.log_ok(f"Followed rename {Path(old).name} → {Path(new).name}")
+    if sync.added:
+        log.log_info(f"Discovered {_plural(sync.added, 'new repo')}")
+    if sync.missing:
+        names = ", ".join(r.label for r in sync.missing)
+        log.log_info(f"Removed {_plural(len(sync.missing), 'repo')} whose "
+                     f"folder is gone: {names}")
+    if sync.foreign:
+        log.log_info(f"Dropped {_plural(len(sync.foreign), 'repo')} outside "
+                     "this account's folder")
 
 
 def sync_prompt_lines(report: SyncReport) -> list[str]:
@@ -476,20 +491,15 @@ class GitStatusPanel(QWidget):
             self.log.log_ok(f"Renamed {Path(old).name} → {Path(new).name}")
         for problem in problems:
             self.log.log_info(problem)
-        # Pick up new folders added to github_dir since last load, and drop any
-        # that no longer belong to this account's folder.
-        added, removed = self.settings.sync_repos()
-        if renamed and not (added or removed):
+        # Pick up new folders added to github_dir since last load, follow ones
+        # renamed outside the app, and drop any that are gone or no longer
+        # belong to this account's folder.
+        sync = self.settings.sync_repos()
+        if renamed or sync.changed:
             self.settings.save()
-        if added or removed:
-            self.settings.save()
+        if sync.added or sync.foreign or sync.missing or sync.moved:
             self._refresh_tag_bar()
-            if added:
-                self.log.log_info(f"Discovered {added} new repo(s)")
-            if removed:
-                self.log.log_info(
-                    f"Dropped {removed} repo(s) outside this account's folder"
-                )
+        log_repo_sync(self.log, sync)
         self._build_cards()
 
     def _start_scanner(self, fetch: bool):

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from src.constants import APP_DISPLAY_NAME, ICON_PATH
 from src.config.settings import Settings, SHARED_SUFFIX
 from src.core.process_launcher import OllamaHealthWorker
-from src.gui.git_status_panel import GitStatusPanel
+from src.gui.git_status_panel import GitStatusPanel, log_repo_sync
 from src.gui.project_panel import ProjectPanel
 from src.gui.settings_dialog import SettingsDialog
 from src.gui.styles import DARK_THEME
@@ -300,14 +300,10 @@ class MainWindow(QMainWindow):
                 f"No folder set for {acct.display_name} — "
                 "open Settings to choose one."
             )
-        added, removed = self.settings.sync_repos()
-        if added or removed:
+        sync = self.settings.sync_repos()
+        if sync.changed:
             self.settings.save()
-        if removed:
-            self.git_panel.log.log_info(
-                f"Dropped {removed} repo(s) outside "
-                f"{acct.folder if acct else 'this account'}"
-            )
+        log_repo_sync(self.git_panel.log, sync)
         if acct is not None and acct.folder:
             self.git_panel.log.log_info(
                 f"Showing {len(acct.repos)} repo(s) from {acct.folder}"

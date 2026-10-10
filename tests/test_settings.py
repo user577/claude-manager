@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -316,9 +318,80 @@ def test_sync_repos_prunes_and_discovers(tmp_path):
         RepoInfo(path=str(mine / "known"), label="known"),
         RepoInfo(path=str(theirs / "foreign"), label="foreign"),
     ])
-    added, removed = acct.sync_repos()
-    assert (added, removed) == (1, 1)
+    sync = acct.sync_repos()
+    assert (sync.added, len(sync.foreign)) == (1, 1)
     assert sorted(r.label for r in acct.repos) == ["brand-new", "known"]
+
+
+def _git(path, *args):
+    subprocess.run(["git", "-C", str(path), *args], check=True,
+                   capture_output=True)
+
+
+def _committed_repo(parent: Path, name: str, message: str = "init") -> Path:
+    d = parent / name
+    d.mkdir(parents=True)
+    _git(d, "init", "-q")
+    _git(d, "config", "user.email", "t@example.com")
+    _git(d, "config", "user.name", "t")
+    _git(d, "commit", "-q", "--allow-empty", "-m", message)
+    return d
+
+
+def test_sync_drops_repos_whose_folder_is_gone(tmp_path):
+    """A New Project placeholder renamed outside the app must not linger."""
+    mine = tmp_path / "mine"
+    _mkrepo(mine, "kept")
+    acct = GitHubAccount(username="u", folder=str(mine), repos=[
+        RepoInfo(path=str(mine / "kept"), label="kept"),
+        RepoInfo(path=str(mine / "new-project-1"), label="new-project-1"),
+    ])
+    sync = acct.sync_repos()
+    assert [r.label for r in sync.missing] == ["new-project-1"]
+    assert sync.changed
+    assert [r.label for r in acct.repos] == ["kept"]
+
+
+def test_sync_keeps_missing_repos_when_folder_is_unreachable(tmp_path):
+    acct = GitHubAccount(username="u", folder=str(tmp_path / "unplugged"),
+                         repos=[RepoInfo(path=str(tmp_path / "unplugged" / "x"),
+                                         label="x")])
+    sync = acct.sync_repos()
+    assert not sync.changed
+    assert [r.label for r in acct.repos] == ["x"]
+
+
+def test_sync_follows_a_rename_made_outside_the_app(tmp_path):
+    mine = tmp_path / "mine"
+    old = _committed_repo(mine, "old-name")
+    acct = GitHubAccount(username="u", folder=str(mine), repos=[
+        RepoInfo(path=str(old), label="old-name", tags=["plc"]),
+    ])
+    assert acct.sync_repos().learned  # root recorded while the folder exists
+    old.rename(mine / "new-name")
+
+    sync = acct.sync_repos()
+    assert sync.moved == [(str(old), str(mine / "new-name"))]
+    assert (sync.added, sync.missing) == (0, [])
+    assert [(r.label, r.tags) for r in acct.repos] == [("new-name", ["plc"])]
+
+
+def test_sync_does_not_guess_between_two_clones_of_one_history(tmp_path):
+    mine = tmp_path / "mine"
+    old = _committed_repo(mine, "fork")
+    acct = GitHubAccount(username="u", folder=str(mine), repos=[
+        RepoInfo(path=str(old), label="fork", tags=["t"]),
+    ])
+    acct.sync_repos()
+    _git(mine, "clone", "-q", str(old), "copy-a")
+    _git(mine, "clone", "-q", str(old), "copy-b")
+    import shutil
+    shutil.rmtree(old, onerror=lambda f, p, _: (os.chmod(p, 0o700), f(p)))
+
+    sync = acct.sync_repos()
+    assert sync.moved == []
+    assert [r.label for r in sync.missing] == ["fork"]
+    assert sorted(r.label for r in acct.repos) == ["copy-a", "copy-b"]
 
 
 def test_switching_account_shows_only_that_folder(tmp_path):
@@ -338,11 +411,12 @@ def test_switching_account_shows_only_that_folder(tmp_path):
         ]),
     ], active_account="personal")
 
-    assert s.sync_repos() == (0, 1)
+    sync = s.sync_repos()
+    assert (sync.added, len(sync.foreign)) == (0, 1)
     assert [r.label for r in s.repos] == ["hobby"]
 
     s.active_account = "work"
-    assert s.sync_repos() == (0, 0)
+    assert not s.sync_repos().changed
     assert [r.label for r in s.repos] == ["job"]
 
 

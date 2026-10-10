@@ -188,17 +188,22 @@ class SettingsDialog(QDialog):
         edit = self.folder_edits.get(active.key)
         if edit is not None:
             active.folder = edit.text().strip()
-        added, removed = active.sync_repos()
+        sync = active.sync_repos()
         self._reload_repo_list()
         if not active.folder:
             self.setWindowTitle("Settings — set a folder first")
-        elif added or removed:
+        else:
             bits = []
-            if added:
-                bits.append(f"discovered {added}")
-            if removed:
-                bits.append(f"dropped {removed} outside the folder")
-            self.setWindowTitle(f"Settings — {', '.join(bits)}")
+            if sync.added:
+                bits.append(f"discovered {sync.added}")
+            if sync.moved:
+                bits.append(f"followed {len(sync.moved)} rename(s)")
+            if sync.missing:
+                bits.append(f"removed {len(sync.missing)} missing")
+            if sync.foreign:
+                bits.append(f"dropped {len(sync.foreign)} outside the folder")
+            if bits:
+                self.setWindowTitle(f"Settings — {', '.join(bits)}")
 
     def _on_repo_selected(self, row: int):
         repos = self.settings.repos
