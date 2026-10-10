@@ -95,7 +95,7 @@ claude-manager/
 │           ├── log_output.py      # Timestamped colored log
 │           ├── usage_meter.py     # Toolbar usage + commit meters
 │           └── repo_status_card.py  # Checkbox, dot, details, launch buttons
-├── tests/                         # 152 tests
+├── tests/                         # 157 tests
 ├── docs/
 │   └── ollama-setup-guide.html    # Local LLM setup guide
 ├── claude_manager.spec            # PyInstaller config (auto-discovers src modules)
@@ -121,10 +121,19 @@ claude-manager/
 - `get_all_tags()` collects unique tags across all repos for the filter bar
 
 **Folder scoping** — an account's folder is the single source of truth for what it
-shows. `prune_foreign_repos()` drops anything outside it, `sync_repos()` prunes then
-discovers, and `prune_all_accounts()` scopes every account (run on `load()`, so an
-old config is cleaned once and saved). This is what keeps personal and work repos on
-separate drives from bleeding into each other on an account switch.
+shows. `prune_foreign_repos()` drops anything outside it, `sync_repos()` prunes,
+discovers, and drops entries whose folder is gone, and `prune_all_accounts()` scopes
+every account (run on `load()`, so an old config is cleaned once and saved). This is
+what keeps personal and work repos on separate drives from bleeding into each other on
+an account switch.
+
+**Renames made outside the app.** Each `RepoInfo` remembers its root commit (`root`)
+while its folder exists. When a folder disappears and exactly one newly discovered
+folder has the same root, `sync_repos()` moves the entry to the new path and keeps its
+tags, instead of dropping it and rediscovering a fresh one. This covers a folder
+renamed in Explorer or by a Claude session. Two clones of one history are ambiguous,
+so in that case the old entry is just dropped. A New Project placeholder that never
+got a commit has no root and is simply dropped.
 
 Two deliberate exceptions, both to avoid destroying a repo list by accident: an
 account with **no folder set** is never pruned, and neither is one whose folder is
@@ -250,7 +259,7 @@ fix (`gh auth refresh -h github.com -s read:user`) instead of a misleading zero.
 uv run pytest
 ```
 
-152 tests covering settings (save/load, discovery, dedup, per-account folder scoping), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency and recent-activity sorts, card selection, the sync controls (Pull/Push/Clone targeting and counts, the single Refresh), GitHub clone discovery, ahead/behind inference for branches pushed without an upstream, commit-counter scope detection, and the pre-launch sync gate (classification, prompt text, remote-URL parsing, the offline fast path, and a real-git fetch → pull → launch run), and new-project kickoff (cmd-safe prompt, folder naming, deferred rename, the button end to end).
+157 tests covering settings (save/load, discovery, dedup, per-account folder scoping, missing-folder cleanup and rename following), project info (description sources, fallbacks), launch commands (wt.exe argv, semicolon escaping, session-marker scrub), git operations (.pyc cleanup, run_git wrapper), window manager (layout calculations, edge cases), urgency and recent-activity sorts, card selection, the sync controls (Pull/Push/Clone targeting and counts, the single Refresh), GitHub clone discovery, ahead/behind inference for branches pushed without an upstream, commit-counter scope detection, and the pre-launch sync gate (classification, prompt text, remote-URL parsing, the offline fast path, and a real-git fetch → pull → launch run), and new-project kickoff (cmd-safe prompt, folder naming, deferred rename, the button end to end).
 
 ## Dependencies
 

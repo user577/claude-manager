@@ -260,7 +260,8 @@ class ProjectPanel(QWidget):
         item = self.repo_list.currentItem()
         if item is not None:
             selected = item.data(Qt.UserRole)
-        self.settings.sync_repos()
+        if self.settings.sync_repos().changed:
+            self.settings.save()
         self.refresh_repos()
         if selected and selected in self._items:
             self.repo_list.setCurrentItem(self._items[selected])
