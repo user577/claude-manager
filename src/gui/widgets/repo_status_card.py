@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSignalBlocker
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
@@ -47,7 +47,10 @@ class RepoStatusCard(QWidget):
         # Select Dirty/Ahead/Behind buttons drive these too.
         self.select_check = QCheckBox()
         self.select_check.setCursor(Qt.PointingHandCursor)
-        self.select_check.setToolTip("Select for a tiled launch")
+        self.select_check.setToolTip(
+            "Select for a tiled launch; while any repo is ticked, Pull and "
+            "Push act on the ticked ones only"
+        )
         self.select_check.toggled.connect(lambda _: self.selection_changed.emit())
         layout.addWidget(self.select_check)
 
@@ -132,8 +135,14 @@ class RepoStatusCard(QWidget):
     def selected(self) -> bool:
         return self.select_check.isChecked()
 
-    def set_selected(self, value: bool):
-        self.select_check.setChecked(value)
+    def set_selected(self, value: bool, notify: bool = True):
+        # notify=False is for bulk changes: the caller updates once at the end
+        # instead of the panel recounting after every single card.
+        if notify:
+            self.select_check.setChecked(value)
+            return
+        with QSignalBlocker(self.select_check):
+            self.select_check.setChecked(value)
 
     def update_status(self, status: RepoStatus):
         self._repo_path = status.path

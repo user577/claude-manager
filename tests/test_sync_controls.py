@@ -121,6 +121,63 @@ def test_request_mid_refresh_is_queued_not_raced(panel):
     assert p._rerun is None and p.refreshing
 
 
+def test_ticks_clear_after_a_ticked_pull_finishes(panel):
+    """Stale ticks used to outlive the Pull and narrow the next action to
+    repos with nothing left to do, greying out Pull/Push for good."""
+    p, paths, started = panel
+    p.scan_all = lambda: None
+    p.cards[paths["b2"]].set_selected(True)
+    p._on_sync()
+    p._on_all_done()
+    assert not any(c.selected for c in p.cards.values())
+    assert p.sync_btn.text() == "Pull (3)" and p.push_btn.text() == "Push (1)"
+
+
+def test_untargeted_pull_leaves_ticks_alone(panel):
+    p, paths, _ = panel
+    p.scan_all = lambda: None
+    p._on_sync()                                # nothing ticked: acts on all
+    p.cards[paths["clean"]].set_selected(True)  # ticked while it runs
+    p._on_all_done()
+    assert p.cards[paths["clean"]].selected
+
+
+def test_hidden_ticks_do_not_narrow_actions(panel):
+    p, paths, _ = panel
+    p.cards[paths["b1"]].set_selected(True)
+    p.search_box.setText("ahead")   # hides b1
+    assert p.push_btn.text() == "Push (1)" and p.push_btn.isEnabled()
+    assert p.sync_btn.text() == "Pull (3)"
+    p.search_box.clear()            # b1 shown again: its tick counts again
+    assert p.sync_btn.text() == "Pull (1)"
+
+
+def test_commit_follows_busy_and_refresh_state(panel):
+    p, _, _ = panel
+    p.commit_msg.setText("wip")
+    assert p.commit_btn.isEnabled()
+    p._set_buttons_enabled(False)
+    p.commit_msg.setText("wip 2")   # typing used to re-enable it mid-operation
+    assert not p.commit_btn.isEnabled()
+    p._set_buttons_enabled(True)
+    p._stage = "fetch"
+    p._update_action_buttons()
+    assert not p.commit_btn.isEnabled()
+
+
+def test_gate_pull_locks_pull_and_push(panel):
+    p, _, started = panel
+    puller = object()
+    p._gate_pulls.add(puller)
+    p._update_action_buttons()
+    assert not p.sync_btn.isEnabled() and not p.push_btn.isEnabled()
+    p._on_sync()
+    assert started == []
+    p._gate_pulls.discard(puller)
+    p._update_action_buttons()
+    assert p.sync_btn.isEnabled()
+
+
 def test_clone_count_comes_from_the_github_check(panel):
     from src.core.repo_scanner import RemoteRepo
     p, _, _ = panel
