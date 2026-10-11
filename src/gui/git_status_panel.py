@@ -147,6 +147,15 @@ class GitStatusPanel(QWidget):
         # double-clicked Launch doesn't stack two prompts for one repo.
         self._gate_workers: set = set()
         self._gate_paths: set[str] = set()
+        # "Pull & Launch" pulls in flight. They lock Pull/Push like a batch
+        # does, so two pulls can't run on the same repo at once.
+        self._gate_pulls: set = set()
+        # Repos the filters hide. Ticks on hidden cards are kept but ignored,
+        # so Pull/Push/Launch only act on ticks you can actually see.
+        self._hidden: set[str] = set()
+        # A Pull/Push on ticked repos clears the ticks when it finishes, so a
+        # stale selection can't silently narrow the next action to nothing.
+        self._clear_ticks_when_done = False
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -175,10 +184,7 @@ class GitStatusPanel(QWidget):
         # GitHub check for uncloned repos. Everything that changes a repo is
         # down in the action row, so this button is always safe to press.
         self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.setToolTip(
-            "Rescan every repo, fetch remotes to update ahead/behind, and check "
-            "GitHub for repos not cloned here (Ctrl+R). Changes nothing."
-        )
+        self.refresh_btn.setToolTip("Rescan repos and fetch from origin")
         self.refresh_btn.clicked.connect(self.refresh)
         top_row.addWidget(self.refresh_btn)
         layout.addLayout(top_row)
@@ -266,7 +272,7 @@ class GitStatusPanel(QWidget):
         clear_sel_btn = QPushButton("Clear")
         clear_sel_btn.setMinimumWidth(60)
         clear_sel_btn.setToolTip("Untick every selected repo")
-        clear_sel_btn.clicked.connect(lambda: self._set_selection(lambda s: False))
+        clear_sel_btn.clicked.connect(self._clear_selection)
         select_row.addWidget(clear_sel_btn)
 
         select_row.addStretch()
@@ -316,12 +322,11 @@ class GitStatusPanel(QWidget):
         commit_row = QHBoxLayout()
         self.commit_msg = QLineEdit()
         self.commit_msg.setPlaceholderText("Commit message for all dirty repos...")
-        self.commit_msg.textChanged.connect(self._on_msg_changed)
         commit_row.addWidget(self.commit_msg, 1)
 
         self.commit_btn = QPushButton("Commit All Dirty")
         self.commit_btn.setObjectName("commitBtn")
-        self.commit_btn.setEnabled(False)
+        self.commit_btn.setEnabled(False)  # set in _update_action_buttons()
         self.commit_btn.clicked.connect(self._on_commit)
         commit_row.addWidget(self.commit_btn)
 
@@ -404,6 +409,9 @@ class GitStatusPanel(QWidget):
 
         layout.addStretch()
 
+        # Connected once every button _update_action_buttons() touches exists.
+        self.commit_msg.textChanged.connect(self._on_msg_changed)
+
         # Initial scan
         self._build_cards()
 
@@ -431,7 +439,10 @@ class GitStatusPanel(QWidget):
                 # every card flashing back to blank.
                 card.update_status(self._statuses.get(repo.path)
                                    or RepoStatus(path=repo.path, label=repo.label))
-            card.set_selected(repo.path in ticked)
+            # An errored card has a disabled checkbox; re-ticking it would
+            # leave a tick the user can't remove.
+            card.set_selected(repo.path in ticked
+                              and card.select_check.isEnabled(), notify=False)
             card.launch_requested.connect(self._launch_single)
             card.launch_auto_requested.connect(self._launch_single_auto)
             card.agent_heavy_requested.connect(self._launch_agent_heavy)
@@ -439,7 +450,10 @@ class GitStatusPanel(QWidget):
             card.selection_changed.connect(self._on_selection_changed)
             self.cards[repo.path] = card
             self.cards_layout.addWidget(card)
-        self._on_selection_changed()
+        # New cards start visible; re-apply the filters so the list still
+        # matches the search box, tags and Out of Sync toggle. Also recounts
+        # the selection.
+        self._apply_filters()
 
     def stop_workers(self):
         """Stop any running background threads for a clean shutdown."""
@@ -521,6 +535,14 @@ class GitStatusPanel(QWidget):
         self.scan_label.setText(
             f"{self._scan_prefix} {self._scan_count}/{self._scan_total}..."
         )
+        prev = self._statuses.get(status.path)
+        if status.error and prev is not None and not prev.error:
+            # Usually a git call that timed out under load. Painting it would
+            # untick and lock the card, so keep the last good state; a repo
+            # that's really broken shows its error from a fresh start.
+            self.log.log_err(f"Couldn't scan {status.label} ({status.error}) "
+                             "— showing its last known state")
+            return
         self._statuses[status.path] = status
         if status.path in self.cards:
             self.cards[status.path].update_status(status)
@@ -528,6 +550,9 @@ class GitStatusPanel(QWidget):
     def _on_scan_complete(self):
         self._scanner = None
         self._reorder_cards()
+        # Statuses moved, so the Out of Sync filter may now match different
+        # repos.
+        self._apply_filters()
         if self._stage == "local" and self._full_refresh:
             self._stage = "fetch"
             self._start_scanner(fetch=True)
@@ -564,6 +589,8 @@ class GitStatusPanel(QWidget):
                 item.widget().setParent(None)
 
         all_tags = self.settings.get_all_tags()
+        # A tag that no repo carries any more can't stay an invisible filter.
+        self.active_tags &= set(all_tags)
         if not all_tags:
             self.tag_bar_widget.hide()
             return
@@ -572,7 +599,7 @@ class GitStatusPanel(QWidget):
         for tag in all_tags:
             btn = QPushButton(tag)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(self._tag_style(False))
+            btn.setStyleSheet(self._tag_style(tag in self.active_tags))
             btn.clicked.connect(lambda checked, t=tag: self._toggle_tag(t))
             self.tag_bar.addWidget(btn)
             self.tag_buttons[tag] = btn
@@ -635,7 +662,18 @@ class GitStatusPanel(QWidget):
                 )
             else:
                 matches_sync = True
-            card.setVisible(matches_search and matches_tags and matches_sync)
+            shown = bool(matches_search and matches_tags and matches_sync)
+            card.setVisible(shown)
+            if shown:
+                self._hidden.discard(path)
+            else:
+                self._hidden.add(path)
+        self._hidden &= set(self.cards)
+        # Hiding or showing a ticked card changes what the actions act on.
+        self._on_selection_changed()
+
+    def _filtering(self) -> bool:
+        return bool(self._hidden)
 
     def _on_sort_changed(self):
         self.settings.repo_sort = self.sort_combo.currentData()
@@ -676,27 +714,33 @@ class GitStatusPanel(QWidget):
     # --- Card selection -------------------------------------------------------
 
     def _set_selection(self, matches) -> list[str]:
-        """Tick every card whose status satisfies `matches`, untick the rest.
+        """Tick every shown card whose status satisfies `matches`, untick the rest.
 
         Returns the labels of the ticked repos. Unscanned repos have no status
-        and are treated as non-matching.
+        and are treated as non-matching; cards the filters hide are never
+        ticked, so a selection is always something you can see.
         """
         picked = []
         for path, card in self.cards.items():
             status = self._statuses.get(path)
-            hit = bool(status) and not status.error and matches(status)
-            card.set_selected(hit)
+            hit = (path not in self._hidden and bool(status)
+                   and not status.error and matches(status))
+            card.set_selected(hit, notify=False)
             if hit:
                 picked.append(status.label)
+        self._on_selection_changed()
         return picked
+
+    def _clear_selection(self):
+        self._set_selection(lambda s: False)
 
     def _select_by(self, matches, found_msg: str, empty_msg: str):
         picked = self._set_selection(matches)
         if picked:
-            self.search_box.clear()
             self.log.log_info(f"{found_msg} ({len(picked)}): {', '.join(picked)}")
         else:
-            self.log.log_info(empty_msg)
+            self.log.log_info(empty_msg + (" among the repos shown"
+                                           if self._filtering() else ""))
 
     def _select_dirty(self):
         self._select_by(lambda s: s.dirty, "Selected dirty", "All repos are clean")
@@ -710,7 +754,9 @@ class GitStatusPanel(QWidget):
                         "All repos are up to date with remote")
 
     def _selected_repos(self) -> list[RepoInfo]:
-        paths = {p for p, card in self.cards.items() if card.selected}
+        """Ticked repos on cards the filters currently show."""
+        paths = {p for p, card in self.cards.items()
+                 if card.selected and p not in self._hidden}
         return [r for r in self.settings.repos if r.path in paths and r.exists()]
 
     def _on_selection_changed(self):
@@ -720,6 +766,16 @@ class GitStatusPanel(QWidget):
             f"Launch Tiled ({count})" if count else "Launch Tiled"
         )
         self._update_action_buttons()
+
+    @property
+    def _idle(self) -> bool:
+        """Nothing is running that the action buttons could collide with.
+
+        Counts are only trustworthy once a scan has finished; mid-refresh
+        they'd be a mix of old and new state (that's how a Pull once took
+        59 repos — every unscanned one counted as possibly behind).
+        """
+        return not (self._busy or self.refreshing or self._gate_pulls)
 
     def _action_scope(self) -> tuple[list[RepoInfo], bool]:
         """Repos Pull/Push consider: the ticked ones if any, else all."""
@@ -733,10 +789,8 @@ class GitStatusPanel(QWidget):
         scope, ticked = self._action_scope()
         pull = pull_targets(scope, self._statuses)
         push = push_targets(scope, self._statuses)
-        # Counts are only trustworthy once a scan has finished; mid-refresh
-        # they'd be a mix of old and new state (that's how a Pull once took
-        # 59 repos — every unscanned one counted as possibly behind).
-        idle = not self._busy and not self.refreshing
+        idle = self._idle
+        self.commit_btn.setEnabled(idle and bool(self.commit_msg.text().strip()))
         where = "ticked repos" if ticked else "repos"
         for btn, verb, targets, tip in (
             (self.sync_btn, "Pull", pull,
@@ -835,11 +889,11 @@ class GitStatusPanel(QWidget):
 
     def _set_buttons_enabled(self, enabled: bool):
         self._busy = not enabled
-        self.commit_btn.setEnabled(enabled and bool(self.commit_msg.text().strip()))
         self.auto_commit_btn.setEnabled(enabled)
         self.refresh_btn.setEnabled(enabled and not self.refreshing)
         self.cancel_btn.setVisible(not enabled)
-        # Launch Tiled and Pull/Push/Clone defer to selection and scan state.
+        # Launch Tiled and Commit/Pull/Push/Clone defer to selection and scan
+        # state.
         self._on_selection_changed()
 
     def _start_operation(self, operation: str, repos, message: str = ""):
@@ -877,6 +931,9 @@ class GitStatusPanel(QWidget):
             self.log.log_info("Cancelling...")
 
     def _on_all_done(self):
+        if self._clear_ticks_when_done:
+            self._clear_ticks_when_done = False
+            self._clear_selection()
         self._set_buttons_enabled(True)
         self.progress.hide()
         self._git_worker = None
@@ -886,13 +943,15 @@ class GitStatusPanel(QWidget):
 
     def _on_msg_changed(self, text: str):
         has_text = bool(text.strip())
-        self.commit_btn.setEnabled(has_text)
+        self._update_action_buttons()
         if has_text:
             self.commit_msg.setStyleSheet("")
         else:
             self.commit_msg.setStyleSheet("border-color: #f44747;")
 
     def _on_commit(self):
+        if not self._idle:
+            return  # Ctrl+Enter reaches here even while the button is disabled
         msg = self.commit_msg.text().strip()
         if not msg:
             self.commit_msg.setStyleSheet("border-color: #f44747;")
@@ -924,23 +983,25 @@ class GitStatusPanel(QWidget):
             )
 
     def _on_push(self):
-        scope, _ = self._action_scope()
+        scope, ticked = self._action_scope()
         pushable = push_targets(scope, self._statuses)
-        if not pushable:
-            return  # button is disabled at 0; guards a stale click
+        if not pushable or not self._idle:
+            return  # button is disabled then; guards a stale click
         self._log_diverged(scope)
         names = ", ".join(r.label for r in pushable)
         self.log.log_info(f"Pushing {len(pushable)} repo(s): {names}")
+        self._clear_ticks_when_done = ticked
         self._start_operation("push", pushable)
 
     def _on_sync(self):
-        scope, _ = self._action_scope()
+        scope, ticked = self._action_scope()
         pullable = pull_targets(scope, self._statuses)
-        if not pullable:
-            return  # button is disabled at 0; guards a stale click
+        if not pullable or not self._idle:
+            return  # button is disabled then; guards a stale click
         self._log_diverged(scope)
         names = ", ".join(r.label for r in pullable)
         self.log.log_info(f"Pulling {len(pullable)} repo(s): {names}")
+        self._clear_ticks_when_done = ticked
         self._start_operation("fetch_pull", pullable)
 
     def _start_github_check(self):
@@ -1194,6 +1255,8 @@ class GitStatusPanel(QWidget):
                          worker.gate_launch, worker.gate_cancel)
         puller.repo_done.connect(self._on_gate_pull_repo)
         puller.all_done.connect(self._on_gate_pulled)
+        self._gate_pulls.add(puller)
+        self._update_action_buttons()
         puller.start()
 
     def _ask_sync(self, report: SyncReport) -> str:
@@ -1230,6 +1293,8 @@ class GitStatusPanel(QWidget):
 
     def _on_gate_pulled(self):
         puller = self.sender()
+        self._gate_pulls.discard(puller)
+        self._update_action_buttons()
         # Refresh the pulled repos' cards in the background; the launch below
         # doesn't wait on it.
         rescan = RepoScannerThread(list(puller.repos), parent=self)

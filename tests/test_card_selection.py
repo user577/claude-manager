@@ -90,6 +90,43 @@ def test_launch_button_tracks_selection_count(panel):
     assert p.launch_tiled_btn.text() == "Launch Tiled (1)"
 
 
+def test_select_skips_cards_the_filters_hide(panel):
+    p, paths = panel
+    p.search_box.setText("dir")     # only "dirty" shown
+    p._set_selection(lambda s: True)
+    assert _selected_labels(p) == ["dirty"]
+    assert not p.cards[paths["clean"]].selected
+
+
+def test_filters_survive_a_card_rebuild(panel):
+    p, paths = panel
+    p.search_box.setText("ahead")
+    p._build_cards()
+    assert p._hidden == {paths[n] for n in ("clean", "dirty", "behind", "gone")}
+    assert p.cards[paths["clean"]].isHidden()
+
+
+def test_out_of_sync_filter_tracks_new_scans(panel):
+    p, paths = panel
+    p.out_of_sync_btn.setChecked(True)
+    p._apply_filters()
+    assert paths["clean"] in p._hidden
+    p._scan_count, p._scan_total, p._scan_prefix = 0, 1, "Scanning"
+    p._on_status_updated(RepoStatus(path=paths["clean"], label="clean", behind=2))
+    p._on_scan_complete()
+    assert paths["clean"] not in p._hidden
+
+
+def test_transient_scan_error_keeps_tick_and_last_state(panel):
+    p, paths = panel
+    p._select_dirty()
+    p._scan_count, p._scan_total, p._scan_prefix = 0, 1, "Scanning"
+    p._on_status_updated(RepoStatus(path=paths["dirty"], label="dirty",
+                                    error="git status timed out"))
+    assert _selected_labels(p) == ["dirty"]
+    assert p._statuses[paths["dirty"]].dirty
+
+
 def test_missing_directory_excluded_even_if_ticked(panel):
     """_selected_repos filters on exists(), not just the checkbox."""
     p, paths = panel
