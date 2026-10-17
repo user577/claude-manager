@@ -852,9 +852,9 @@ class GitStatusPanel(QWidget):
             permission_mode="default",
             model=self.model_combo.currentData(),
             backend="cloud",
-            # Same directory guardrail the per-card launches inject — the old
-            # Launch tab sent no prompt at all.
-            initial_prompt=self._guardrail_multi(repos),
+            # Same directory guardrail the per-card launches inject, as system
+            # context so the session doesn't open on a task-less user turn.
+            system_prompt=self._guardrail_multi(repos),
             use_worktree=False,
             session_mode="new",
             parent=self,
@@ -1408,9 +1408,12 @@ class GitStatusPanel(QWidget):
             return
 
         uid = uuid.uuid4().hex[:8]
+        # The guardrail goes in as system context, not as the first prompt: a
+        # task-less first user turn makes the model invent a question in the
+        # user's voice, which later turns then treat as real.
         escaped = self._escape_prompt(self._guardrail(repo.path))
         flags = " --dangerously-skip-permissions" if auto else ""
-        claude_cmd = f'claude{flags} "{escaped}"'
+        claude_cmd = f'claude{flags} --append-system-prompt "{escaped}"'
         self._spawn_claude_window(
             f"Claude-{repo.label}-{uid}", repo.path, claude_cmd,
             "Auto" if auto else "standard", repo.label)

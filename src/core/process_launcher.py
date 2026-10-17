@@ -266,6 +266,7 @@ class LaunchWorker(QThread):
                  backend: str = "cloud",
                  local_model: str = "",
                  initial_prompt: str = "",
+                 system_prompt: str = "",
                  use_worktree: bool = False,
                  session_mode: str = "new",
                  parent=None):
@@ -278,6 +279,7 @@ class LaunchWorker(QThread):
         self.backend = backend
         self.local_model = local_model
         self.initial_prompt = initial_prompt
+        self.system_prompt = system_prompt
         self.use_worktree = use_worktree
         self.session_mode = session_mode
 
@@ -312,6 +314,11 @@ class LaunchWorker(QThread):
                 claude_cmd += " --continue"
             elif self.session_mode == "named":
                 claude_cmd += f" --name {repo.label}"
+
+            if self.system_prompt.strip():
+                claude_cmd += (
+                    f' --append-system-prompt "{escape_prompt(self.system_prompt)}"'
+                )
 
             if self.initial_prompt.strip():
                 claude_cmd += f' "{escape_prompt(self.initial_prompt)}"'
