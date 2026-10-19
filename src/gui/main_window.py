@@ -279,12 +279,28 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.account_combo.setCurrentIndex(idx)
         self.account_combo.blockSignals(False)
+        self._pin_identity()
 
         # If reconciliation moved the active account (e.g. gh switched outside
         # the app, or a fresh login changed the active identity), rebuild the
         # views so they reflect the now-active account's folder.
         if self.settings.active_account != prev_active:
             self._apply_active_account()
+
+    def _pin_identity(self):
+        """Run every git/gh call and launched session as the active account.
+
+        Agents run `gh auth switch` on their own, so gh's global active
+        account can't be trusted to match the workspace on screen.
+        """
+        from src.core.github_accounts import pin_process_identity
+        acct = self.settings.active()
+        username = acct.username if acct is not None else None
+        if not pin_process_identity(username) and username:
+            self.git_panel.log.log_err(
+                f"No gh token for {username} — git and launched sessions "
+                "will use gh's active account instead"
+            )
 
     def _apply_active_account(self):
         """Rebuild the Launch/Git views for the current active account.
@@ -344,6 +360,8 @@ class MainWindow(QMainWindow):
         # Swap the visible workspace to this account's folder.
         self.settings.active_account = key
         self.settings.save()
+        if identity_changed:
+            self._pin_identity()
         self._apply_active_account()
         # The commit meter tracks the active gh identity's contribution graph,
         # so recount now that the identity changed.

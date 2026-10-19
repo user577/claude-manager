@@ -175,9 +175,9 @@ def test_shared_workspace_stays_active_while_its_user_is_the_gh_identity():
     s.sync_accounts(["user577", "acct2"], "user577")
     assert s.active_account == "user577#shared"
     assert s.active().shared
-    # gh switched to another user outside the app: follow it.
+    # gh switched to another user outside the app (an agent pushing): stay.
     s.sync_accounts(["user577", "acct2"], "acct2")
-    assert s.active_account == "acct2"
+    assert s.active_account == "user577#shared"
 
 
 def test_owned_and_shared_workspaces_keep_separate_repos(tmp_path):
@@ -221,12 +221,20 @@ def test_sync_accounts_adds_new_accounts():
     assert acct2.folder == ""
 
 
-def test_sync_accounts_tracks_active_switch():
+def test_sync_accounts_ignores_an_outside_gh_switch():
     s = Settings(github_dir="/work")
     s.sync_accounts(["user577", "acct2"], "user577")
     assert s.active_account == "user577"
-    # gh active changed (e.g. user ran gh auth switch elsewhere)
+    # gh active changed elsewhere (an agent ran gh auth switch to push).
     s.sync_accounts(["user577", "acct2"], "acct2")
+    assert s.active_account == "user577"
+
+
+def test_sync_accounts_falls_back_to_gh_active_when_selection_is_gone():
+    s = Settings(accounts=[GitHubAccount(username="user577"),
+                           GitHubAccount(username="acct2")],
+                 active_account="removed-user")
+    assert s.sync_accounts(["user577", "acct2"], "acct2")
     assert s.active_account == "acct2"
 
 

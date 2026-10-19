@@ -107,7 +107,9 @@ There are also bulk actions:
 - **Daily commit counter** with a goal, read from your GitHub contribution graph.
 - **Account switcher** for multiple GitHub accounts (via `gh auth switch`). Each account
   has its own repos folder, plus a `· shared` workspace for repos other people have
-  shared with you.
+  shared with you. The app's git calls and the sessions it launches run with the
+  selected account's token (`GH_TOKEN`), so an agent running `gh auth switch` elsewhere
+  doesn't break them.
 - **Pin** keeps the window always on top. `?` lists the keyboard shortcuts.
 
 ## Safety model

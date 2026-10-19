@@ -429,7 +429,8 @@ class Settings:
         - Adopts the legacy/unassigned bucket into the active gh account so an
           upgraded config keeps its folder + repos.
         - Auto-creates a (folder-less) row for each gh account not yet tracked.
-        - Keeps `active_account` aligned with the active gh account.
+        - Falls back to the active gh account only when `active_account`
+          names no tracked workspace. The app's own pick wins otherwise.
 
         Returns True if anything changed (caller should save()).
         """
@@ -471,14 +472,17 @@ class Settings:
                     a.folder = str(Path(owner.folder) / SHARED_SUBFOLDER)
                     changed = True
 
-        # 4. Keep active_account aligned with the active gh account. Either of
-        #    that user's workspaces counts as aligned — both use its identity.
+        # 4. Only fill in active_account when it names nothing. gh's active
+        #    account is global and agents flip it to push from the other
+        #    account, so following it would swap the workspace under the user
+        #    on every restart or Settings close.
         current = self.find(self.active_account)
-        if active and self.find(active) is not None:
-            if current is None or current.username != active:
-                self.active_account = active
-                changed = True
-        elif current is None and self.accounts:
+        if current is not None:
+            pass
+        elif active and self.find(active) is not None:
+            self.active_account = active
+            changed = True
+        elif self.accounts:
             self.active_account = self.accounts[0].key
             changed = True
 
