@@ -558,13 +558,26 @@ class GitStatusPanel(QWidget):
             self._start_scanner(fetch=True)
             return
         if self._stage == "fetch":
-            failed = [s.label for s in self._statuses.values()
+            failed = [s for s in self._statuses.values()
                       if s.fetch_error and s.path in self.cards]
             if failed:
+                labels = ", ".join(sorted(s.label for s in failed))
                 self.log.log_err(
-                    f"Fetch failed for {len(failed)} repo(s): {', '.join(sorted(failed))} "
+                    f"Fetch failed for {len(failed)} repo(s): {labels} "
                     "— their ahead/behind is from the last good fetch"
                 )
+                # GitHub answers "not found" for a private repo fetched with
+                # another account's token, so a wall of them means the wrong
+                # identity, not missing repos.
+                not_found = sum("Repository not found" in s.fetch_error
+                                for s in failed)
+                if not_found >= 3:
+                    self.log.log_err(
+                        f"{not_found} fetches got \"Repository not found\" — "
+                        "likely authenticating as the wrong GitHub account. "
+                        "Check that `gh auth status` lists this workspace's "
+                        "account."
+                    )
             self._stage = "github"
             self._start_github_check()
             return

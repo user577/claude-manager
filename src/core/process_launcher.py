@@ -229,7 +229,23 @@ _SESSION_MARKERS = (
 _SCRUB_PREFIX = "".join(f"set {name}=&& " for name in _SESSION_MARKERS)
 
 
-def build_wt_command(title: str, cwd: str, shell_cmd: str) -> list[str]:
+def _identity_prefix(gh_user: str | None) -> str:
+    """Give the launched shell its workspace's GitHub token as GH_TOKEN.
+
+    Then the session's git push and gh calls run as that account without
+    anyone touching gh's global active account. The shell asks gh for the
+    token itself, so it never appears in a command line. The parentheses
+    and single "&" keep claude starting even if gh fails.
+    """
+    from src.core.github_accounts import is_valid_username
+    if not gh_user or not is_valid_username(gh_user):
+        return ""
+    return (f"set GH_TOKEN=&& (for /f %t in ('gh auth token --user {gh_user}')"
+            f" do @set GH_TOKEN=%t)& ")
+
+
+def build_wt_command(title: str, cwd: str, shell_cmd: str,
+                     gh_user: str | None = None) -> list[str]:
     """Build the wt.exe argv that opens `shell_cmd` in a new titled window.
 
     wt.exe splits its command line on ";" even inside quoted arguments, then
@@ -238,15 +254,21 @@ def build_wt_command(title: str, cwd: str, shell_cmd: str) -> list[str]:
 
     Any inherited Claude Code session markers are cleared first, so a launched
     instance starts as its own session no matter how this app was started.
+    `gh_user` defaults to the account the app pinned for the active
+    workspace (see github_accounts.pin_process_identity).
 
     Every launch path goes through here. Hand-rolling the argv is how the
     semicolon bug survived in LaunchWorker long after the git panel fixed it.
     """
+    if gh_user is None:
+        from src.core.github_accounts import pinned_identity
+        gh_user = pinned_identity()
+    prefix = _SCRUB_PREFIX + _identity_prefix(gh_user)
     return [
         "wt.exe", "--window", "new",
         "--title", title,
         "-d", cwd,
-        "cmd.exe", "/k", (_SCRUB_PREFIX + shell_cmd).replace(";", "\\;"),
+        "cmd.exe", "/k", (prefix + shell_cmd).replace(";", "\\;"),
     ]
 
 

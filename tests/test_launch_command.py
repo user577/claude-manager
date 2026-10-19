@@ -84,3 +84,26 @@ def test_scrub_does_not_disturb_an_existing_env_prefix():
     assert cmd[-1].endswith(inner)
     assert "set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1&&" in cmd[-1]
     assert "set CLAUDE_CODE_CHILD_SESSION=&&" in cmd[-1]
+
+
+def test_session_gets_its_workspace_token_without_it_in_the_argv():
+    """Agents pushing from the right account shouldn't need gh auth switch."""
+    cmd = build_wt_command("t", r"C:\repo", "claude", gh_user="user577")
+    line = cmd[-1]
+    assert "'gh auth token --user user577'" in line
+    assert "do @set GH_TOKEN=%t)& " in line
+    # Cleared first, so a stale inherited token can't leak through.
+    assert line.index("set GH_TOKEN=&&") < line.index("gh auth token")
+    assert "gho_" not in line
+    assert line.endswith("claude")
+
+
+def test_unsafe_username_is_never_spliced_into_the_command():
+    cmd = build_wt_command("t", r"C:\repo", "claude",
+                           gh_user="x' & calc & '")
+    assert "gh auth token" not in cmd[-1]
+
+
+def test_no_pinned_identity_means_no_token_prefix():
+    cmd = build_wt_command("t", r"C:\repo", "claude")
+    assert "GH_TOKEN" not in cmd[-1]

@@ -81,7 +81,7 @@ claude-manager/
 │   │   ├── commit_counter.py      # Daily commits (GitHub contribution graph)
 │   │   ├── new_project.py         # Blank repo, interview prompt, deferred rename
 │   │   ├── usage_tracker.py       # Live 5h/7d usage limits
-│   │   ├── github_accounts.py     # gh CLI account listing / switching
+│   │   ├── github_accounts.py     # gh account listing / switching; pins GH_TOKEN
 │   │   ├── process_launcher.py    # Claude launch, wt.exe argv, Ollama framework
 │   │   └── window_manager.py      # Window tiling via Win32 API (ctypes)
 │   └── gui/
