@@ -1,4 +1,15 @@
-from src.core.repo_scanner import collaborator_repos_cmd, parse_collaborator_repos
+from src.core.repo_scanner import (
+    collaborator_repos_cmd, owned_shared_repos_cmd, parse_collaborator_repos,
+)
+
+
+def test_owned_shared_query_pages_owned_repos_and_skips_the_owner():
+    cmd = owned_shared_repos_cmd()
+    assert cmd[:4] == ["gh", "api", "graphql", "--paginate"]
+    query = cmd[cmd.index("-f") + 1]
+    assert "ownerAffiliations: OWNER" in query and "$endCursor" in query
+    # The owner is a direct collaborator on their own repo; subtract them.
+    assert "- [$v.login]" in cmd[cmd.index("--jq") + 1]
 
 
 def test_collaborator_query_asks_for_shared_repos_only_and_pages():

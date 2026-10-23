@@ -431,11 +431,45 @@ def parse_collaborator_repos(stdout: str) -> list[dict]:
     return [json.loads(line) for line in stdout.splitlines() if line.strip()]
 
 
+# The owner is listed as a direct collaborator on their own repos, so a repo
+# counts as shared only when someone else is too. Pending invitations aren't
+# in this connection; the repo shows once the invitee accepts.
+_OWNED_SHARED_QUERY = (
+    "query($endCursor: String) { viewer { login repositories(first: 100, "
+    "after: $endCursor, ownerAffiliations: OWNER) { pageInfo { hasNextPage "
+    "endCursor } nodes { name collaborators(affiliation: DIRECT, first: 10) "
+    "{ nodes { login } } } } } }"
+)
+_OWNED_SHARED_JQ = (
+    ".data.viewer as $v | $v.repositories.nodes[] "
+    "| select([.collaborators.nodes[]?.login] - [$v.login] | length > 0) "
+    "| .name"
+)
+
+
+def owned_shared_repos_cmd() -> list[str]:
+    """`gh` argv listing the names of the user's own repos shared with others.
+
+    One paged GraphQL query rather than a collaborators call per repo.
+    """
+    return [
+        "gh", "api", "graphql", "--paginate",
+        "-f", f"query={_OWNED_SHARED_QUERY}",
+        "--jq", _OWNED_SHARED_JQ,
+    ]
+
+
 class GitHubSyncThread(QThread):
     """Queries GitHub for the authenticated user's repos — owned ones, or with
     ``collaborator=True`` the ones shared with them — and compares against
-    locally cloned repos."""
+    locally cloned repos.
+
+    In collaborator mode it also emits ``owned_shared`` (before ``finished``)
+    with the names of the user's own repos that have other collaborators, so
+    the shared view can show those too.
+    """
     finished = Signal(list, list)  # (missing: list[RemoteRepo], error: list[str])
+    owned_shared = Signal(list)  # list[str] repo names
 
     def __init__(self, local_names: set[str], collaborator: bool = False,
                  parent=None):
@@ -461,6 +495,19 @@ class GitHubSyncThread(QThread):
 
             if self.collaborator:
                 repos = parse_collaborator_repos(r.stdout)
+                own = subprocess.run(
+                    owned_shared_repos_cmd(),
+                    capture_output=True, text=True, timeout=60,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if own.returncode != 0:
+                    # Leave the current links alone rather than unlink
+                    # everything on a failed query.
+                    self.finished.emit([], [
+                        f"gh api graphql failed: {own.stderr.strip()}"])
+                    return
+                self.owned_shared.emit(
+                    [n for n in own.stdout.splitlines() if n.strip()])
             else:
                 repos = json.loads(r.stdout)
             missing = []

@@ -20,7 +20,7 @@ Two tabs: **Git** (status, batch operations, launching) and **Projects** (descri
 - **Auto Commit** — spawn a Sonnet instance per dirty repo to review changes and commit autonomously
 - **Projects tab** — browse every repo's auto-derived description, its PLAN/NEXT/ROADMAP/TODO docs, and its commit history
 - **Live usage meters** — 5-hour / 7-day limit windows plus a daily commit counter in the toolbar
-- **Multi-account** — switch GitHub accounts (via `gh`), each with its own repo folder plus a `· shared` workspace for repos shared with you
+- **Multi-account** — switch GitHub accounts (via `gh`), each with its own repo folder plus a `· shared` workspace for repos shared with you and your own repos that have other collaborators (linked in place from the owned folder)
 - **Tag-based filtering** — organize repos with custom tags, filter in both tabs
 - **Single-instance enforcement** — Windows mutex prevents duplicate app windows
 - **VS Code Dark+ theme** — conventional charcoal/blue color scheme

@@ -196,6 +196,66 @@ def test_owned_and_shared_workspaces_keep_separate_repos(tmp_path):
     assert [r.label for r in s.repos] == ["energy-monitor"]
 
 
+def _owned_and_shared(tmp_path):
+    own = tmp_path / "GitHub"
+    _mkrepo(own, "mine")
+    _mkrepo(own, "6ch-energy-meter")
+    _mkrepo(own / "shared", "energy-monitor")
+    s = Settings(accounts=[
+        GitHubAccount(username="user577", folder=str(own)),
+        GitHubAccount(username="user577", folder=str(own / "shared"),
+                      shared=True),
+    ], active_account="user577")
+    s.sync_repos()
+    s.active_account = "user577#shared"
+    s.sync_repos()
+    return s, own
+
+
+def test_shared_view_also_shows_owned_repos_shared_with_others(tmp_path):
+    s, own = _owned_and_shared(tmp_path)
+    added, removed = s.link_owned_shared(["6ch-energy-meter", "not-cloned"])
+    assert [r.label for r in added] == ["6ch-energy-meter"] and removed == []
+    assert sorted(r.label for r in s.repos) == ["6ch-energy-meter",
+                                                "energy-monitor"]
+    # It stays where it is, and in the owned view too.
+    assert Path(next(r.path for r in s.repos
+                     if r.label == "6ch-energy-meter")).parent == own
+    assert "6ch-energy-meter" in [r.label for r in s.find("user577").repos]
+    # A later sync keeps it instead of pruning it as foreign.
+    assert not s.sync_repos().foreign
+    # Same answer next Refresh: nothing to save.
+    assert s.link_owned_shared(["6ch-energy-meter"]) is None
+
+
+def test_unshared_owned_repo_leaves_the_shared_view(tmp_path):
+    s, _ = _owned_and_shared(tmp_path)
+    s.link_owned_shared(["6ch-energy-meter"])
+    added, removed = s.link_owned_shared([])
+    assert added == [] and [r.label for r in removed] == ["6ch-energy-meter"]
+    assert [r.label for r in s.repos] == ["energy-monitor"]
+
+
+def test_owned_view_ignores_owned_shared_links(tmp_path):
+    s, _ = _owned_and_shared(tmp_path)
+    s.active_account = "user577"
+    assert s.link_owned_shared(["6ch-energy-meter"]) is None
+
+
+def test_linked_repos_show_before_the_shared_folder_exists(tmp_path):
+    own = tmp_path / "GitHub"
+    _mkrepo(own, "6ch-energy-meter")
+    s = Settings(accounts=[
+        GitHubAccount(username="u", folder=str(own)),
+        GitHubAccount(username="u", folder=str(own / "shared"), shared=True),
+    ], active_account="u")
+    s.sync_repos()
+    s.active_account = "u#shared"
+    s.link_owned_shared(["6ch-energy-meter"])
+    s.active().repos = []
+    assert s.sync_repos().added == 1
+
+
 def test_shared_flag_round_trips_through_save(tmp_path):
     config_file = tmp_path / "settings.json"
     with patch("src.config.settings.CONFIG_FILE", config_file), \
