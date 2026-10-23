@@ -1039,8 +1039,30 @@ class GitStatusPanel(QWidget):
         self._gh_sync = GitHubSyncThread(
             local_names, collaborator=collaborator, parent=self,
         )
+        self._gh_sync.owned_shared.connect(self._on_owned_shared)
         self._gh_sync.finished.connect(self._on_github_sync_done)
         self._gh_sync.start()
+
+    def _on_owned_shared(self, names: list):
+        """Show the account's own repos that it shares with others here too."""
+        change = self.settings.link_owned_shared(names)
+        if change is None:
+            return
+        self.settings.save()
+        added, removed = change
+        if added:
+            self.log.log_info(
+                f"Showing {_plural(len(added), 'repo')} you share with others: "
+                + ", ".join(r.label for r in added))
+            # New cards have no status yet; scan once this Refresh ends.
+            self._rerun = self._rerun or "local"
+        if removed:
+            self.log.log_info(
+                "No longer shared, hidden here: "
+                + ", ".join(r.label for r in removed))
+        if added or removed:
+            self._refresh_tag_bar()
+            self._build_cards()
 
     def _on_github_sync_done(self, missing: list, errors: list):
         self._gh_sync = None

@@ -107,7 +107,9 @@ There are also bulk actions:
 - **Daily commit counter** with a goal, read from your GitHub contribution graph.
 - **Account switcher** for multiple GitHub accounts (via `gh auth switch`). Each account
   has its own repos folder, plus a `· shared` workspace for repos other people have
-  shared with you. The app's git calls and the sessions it launches run with the
+  shared with you. That workspace also lists your own repos that have other
+  collaborators, straight from your main folder, so they show in both views. The app's
+  git calls and the sessions it launches run with the
   selected account's token (`GH_TOKEN`), so an agent running `gh auth switch` elsewhere
   doesn't break them.
 - **Pin** keeps the window always on top. `?` lists the keyboard shortcuts.
@@ -168,7 +170,8 @@ shortcut (desktop shortcut optional).
 ### First run
 
 1. The app picks up every account signed in to `gh` and creates two workspaces for each:
-   your own repos, and a `· shared` view for repos shared with you.
+   your own repos, and a `· shared` view for repos shared with you (plus your own repos
+   you've shared with others).
 2. Open **Settings** and set each account's folder. The default is
    `Documents\GitHub` in your user folder; a shared workspace defaults to a `shared`
    subfolder of its owner's folder.

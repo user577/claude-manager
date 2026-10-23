@@ -108,6 +108,11 @@ class GitHubAccount:
     # account collaborates on. Same gh identity, its own folder, keyed apart
     # from the owned workspace by `key`.
     shared: bool = False
+    # Repos outside `folder` this workspace shows anyway: in a shared
+    # workspace, the owner's own repos that have other collaborators. They
+    # stay in the owned folder (and view); Refresh's GitHub check keeps this
+    # list current.
+    linked: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -126,6 +131,7 @@ class GitHubAccount:
             folder=d.get("folder", ""),
             repos=[RepoInfo(**r) for r in d.get("repos", [])],
             shared=d.get("shared", False),
+            linked=d.get("linked", []),
         )
 
     def to_dict(self) -> dict:
@@ -134,25 +140,26 @@ class GitHubAccount:
             "folder": self.folder,
             "repos": [asdict(r) for r in self.repos],
             "shared": self.shared,
+            "linked": self.linked,
         }
 
     def owns(self, path: str) -> bool:
-        """True when ``path`` belongs to this account's folder."""
-        return _is_under(path, self.folder)
+        """True when ``path`` belongs to this account's folder, or is linked."""
+        return (_is_under(path, self.folder)
+                or _norm(path) in {_norm(p) for p in self.linked})
 
     def discover_repos(self) -> int:
         """Scan this account's folder for git repos. Returns count added."""
         return len(self._discover())
 
     def _discover(self) -> list[RepoInfo]:
-        if not self.folder:
-            return []
-        folder = Path(self.folder)
-        if not folder.is_dir():
-            return []
+        folder = Path(self.folder) if self.folder else None
+        candidates = (sorted(folder.iterdir())
+                      if folder is not None and folder.is_dir() else [])
+        candidates += [Path(p) for p in self.linked]
         known = {_norm(r.path) for r in self.repos}
         added: list[RepoInfo] = []
-        for child in sorted(folder.iterdir()):
+        for child in candidates:
             if child.is_dir() and (child / ".git").exists():
                 p = str(child)
                 if _norm(p) not in known:
@@ -199,6 +206,9 @@ class GitHubAccount:
         """
         result = RepoSync(foreign=self.prune_foreign_repos())
         if not self.folder or not Path(self.folder).is_dir():
+            # Linked repos live elsewhere, so a not-yet-created shared
+            # folder doesn't hide them.
+            result.added = len(self._discover())
             return result
 
         missing = [r for r in self.repos if not r.exists()]
@@ -499,6 +509,31 @@ class Settings:
         """Scope the active account's repos to its folder."""
         a = self.active()
         return a.sync_repos() if a is not None else RepoSync()
+
+    def link_owned_shared(
+        self, names: list[str],
+    ) -> tuple[list[RepoInfo], list[RepoInfo]] | None:
+        """Show the owner's repos named in ``names`` in the active shared view.
+
+        ``names`` are the GitHub names of repos the account owns and has
+        shared with someone; they're matched to folder names in the owned
+        workspace, so ones not cloned there are skipped. Returns ``(added,
+        removed)`` repos, or None when the links didn't change (nothing to
+        save).
+        """
+        a = self.active()
+        if a is None or not a.shared:
+            return None
+        owner = self.find(a.username)
+        wanted = set(names)
+        linked = sorted(r.path for r in (owner.repos if owner else [])
+                        if Path(r.path).name in wanted)
+        if linked == sorted(a.linked):
+            return None
+        a.linked = linked
+        removed = [r for r in a.repos if not a.owns(r.path)]
+        a.repos = [r for r in a.repos if a.owns(r.path)]
+        return a._discover(), removed
 
     def prune_all_accounts(self) -> dict[str, list[RepoInfo]]:
         """Scope *every* account's repo list to its own folder.
