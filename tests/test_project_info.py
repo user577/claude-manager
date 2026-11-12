@@ -71,6 +71,23 @@ def test_first_paragraph_stops_at_next_block():
     assert first_paragraph("Intro line.\n- a bullet\n") == "Intro line."
 
 
+def test_first_paragraph_keeps_a_paragraph_that_opens_in_bold():
+    text = "# packquote\n\n**Drag in a Pack and Go zip.** Get a priced quote.\n\n- a bullet\n"
+    assert first_paragraph(text) == "Drag in a Pack and Go zip. Get a priced quote."
+
+
+def test_first_paragraph_still_skips_real_lists_and_rules():
+    text = "# T\n\n* star bullet\n+ plus bullet\n1. numbered\n---\n***\n\nThe prose.\n"
+    assert first_paragraph(text) == "The prose."
+
+
+def test_describe_ignores_a_byte_order_mark(tmp_path):
+    (tmp_path / "README.md").write_bytes("﻿# Title\n\nWhat it is.\n".encode("utf-8"))
+    desc, src, text, _ = describe(str(tmp_path))
+    assert (desc, src) == ("What it is.", "README.md")
+    assert not text.startswith("﻿")
+
+
 def test_first_paragraph_empty_for_headings_only():
     assert first_paragraph("# Title\n\n## Sub\n") == ""
 

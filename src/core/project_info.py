@@ -32,7 +32,17 @@ MAX_COMMITS = 60
 
 # Skipped when hunting for the description paragraph: badge images, HTML
 # wrappers, blockquote callouts, and list items are decoration, not prose.
-_SKIP_PREFIXES = ("#", ">", "!", "<", "-", "*", "+", "|", "=", "```", "[!")
+_SKIP_PREFIXES = ("#", ">", "!", "<", "|", "=", "```", "[!")
+
+# A list item or horizontal rule. Whitespace is required after the marker so a
+# paragraph that *opens* in bold ("**Drag in a zip.** Get a quote.") is not
+# mistaken for a "*" bullet and skipped.
+_LIST_OR_RULE_RE = re.compile(r"^(?:[-*+](?:\s|$)|\d+[.)]\s|(?:[-*_]\s*){3,}$)")
+
+
+def _is_block_marker(line: str) -> bool:
+    """True if `line` starts a non-prose block (heading, badge, list, rule...)."""
+    return line.startswith(_SKIP_PREFIXES) or bool(_LIST_OR_RULE_RE.match(line))
 
 
 @dataclass
@@ -67,12 +77,16 @@ class ProjectInfo:
 
 
 def _read_text(p: Path, limit: int = 400_000) -> str:
-    """Read a text file defensively — encoding, size, and permissions all vary."""
+    """Read a text file defensively — encoding, size, and permissions all vary.
+
+    utf-8-sig drops a leading byte-order mark (Notepad and PowerShell write one);
+    left in, it hides the first "# heading" from the block checks below.
+    """
     try:
         if p.stat().st_size > limit:
-            return p.read_text(encoding="utf-8", errors="replace")[:limit] + \
+            return p.read_text(encoding="utf-8-sig", errors="replace")[:limit] + \
                 "\n\n… (truncated)"
-        return p.read_text(encoding="utf-8", errors="replace")
+        return p.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
         return ""
 
@@ -183,7 +197,7 @@ def first_paragraph(text: str) -> str:
             if lines:
                 break
             continue
-        if line.startswith(_SKIP_PREFIXES):
+        if _is_block_marker(line):
             if lines:
                 break  # prose ended and a new block started
             continue
