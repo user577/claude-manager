@@ -58,7 +58,9 @@ URGENCY_TIERS = (
     ("behind", lambda s: s.behind > 0),
     ("modified", lambda s: s.modified_count > 0),
     ("ahead", lambda s: s.ahead > 0),
+    ("unpushed", lambda s: bool(s.unpushed_branches) or s.no_remote),
     ("untracked", lambda s: s.untracked_count > 0),
+    ("stash", lambda s: s.stash_count > 0),
     ("clean", lambda s: True),
 )
 
@@ -124,10 +126,12 @@ def pull_targets(repos, statuses: dict) -> list:
 
 
 def push_targets(repos, statuses: dict) -> list:
-    """Repos a Push would send: scanned, strictly ahead of a known remote."""
+    """Repos a Push would send: scanned, and either strictly ahead of a known
+    remote or holding local branches whose commits no remote has yet."""
     return [r for r in repos
-            if (s := statuses.get(r.path)) and not s.error and s.has_remote
-            and s.ahead > 0 and s.behind == 0]
+            if (s := statuses.get(r.path)) and not s.error
+            and ((s.has_remote and s.ahead > 0 and s.behind == 0)
+                 or (s.unpushed_branches and not s.no_remote))]
 
 
 class GitStatusPanel(QWidget):
@@ -265,7 +269,10 @@ class GitStatusPanel(QWidget):
         self.out_of_sync_btn = QPushButton("Out of Sync")
         self.out_of_sync_btn.setMinimumWidth(100)
         self.out_of_sync_btn.setCheckable(True)
-        self.out_of_sync_btn.setToolTip("Show only repos that are ahead, behind, diverged, or dirty")
+        self.out_of_sync_btn.setToolTip(
+            "Show only repos that don't match their remote: uncommitted "
+            "changes, stashes, unpushed commits on any branch, behind, "
+            "diverged, or no remote at all")
         self.out_of_sync_btn.clicked.connect(self._apply_filters)
         select_row.addWidget(self.out_of_sync_btn)
 
@@ -670,9 +677,7 @@ class GitStatusPanel(QWidget):
             )
             if filter_sync:
                 s = self._statuses.get(path)
-                matches_sync = s is not None and (
-                    s.dirty or s.ahead > 0 or s.behind > 0 or s.diverged
-                )
+                matches_sync = s is not None and not s.matches_remote
             else:
                 matches_sync = True
             shown = bool(matches_search and matches_tags and matches_sync)
@@ -759,8 +764,9 @@ class GitStatusPanel(QWidget):
         self._select_by(lambda s: s.dirty, "Selected dirty", "All repos are clean")
 
     def _select_ahead(self):
-        self._select_by(lambda s: s.ahead > 0, "Selected ahead",
-                        "No repos are ahead of remote")
+        self._select_by(lambda s: s.ahead > 0 or bool(s.unpushed_branches),
+                        "Selected ahead or with unpushed branches",
+                        "No repos have commits the remote is missing")
 
     def _select_behind(self):
         self._select_by(lambda s: s.behind > 0, "Selected behind",
@@ -810,8 +816,10 @@ class GitStatusPanel(QWidget):
              f"Fetch and fast-forward the {where} that are behind. Never "
              "overwrites local work; diverged repos are skipped."),
             (self.push_btn, "Push", push,
-             f"Push the {where} that are ahead. Repos that are also behind "
-             "(diverged) are skipped — pull or resolve those first."),
+             f"Push the {where} that are ahead, and every local branch with "
+             "commits no remote has yet (new branches get an upstream). "
+             "Never forces; a branch that is behind is skipped — pull or "
+             "resolve those first."),
         ):
             btn.setText(f"{verb} ({len(targets)})" if targets else verb)
             btn.setEnabled(idle and bool(targets))

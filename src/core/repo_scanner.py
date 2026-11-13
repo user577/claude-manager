@@ -5,7 +5,7 @@ import socket
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import Signal, QThread
@@ -42,7 +42,25 @@ class RepoStatus:
     # Newest mtime among uncommitted changes (modified, staged, untracked), so
     # today's unsaved-to-git work counts as recent. 0 when the tree is clean.
     last_worktree_ts: int = 0
+    # Local branches holding commits that no remote-tracking ref has: work that
+    # exists only on this disk. The checked-out branch is listed only when it
+    # has no remote counterpart (its unpushed commits otherwise show as ahead).
+    unpushed_branches: list[str] = field(default_factory=list)
+    # The repo has no remote configured at all, so nothing here can be synced.
+    no_remote: bool = False
     error: str | None = None
+
+    @property
+    def matches_remote(self) -> bool:
+        """Everything in this repo is on its remote: what the green dot means.
+
+        Uncommitted changes, stashes, unpushed commits on any local branch,
+        and a repo with no remote all fail it, as does being behind (the
+        remote has work this disk doesn't).
+        """
+        return not (self.error or self.dirty or self.stash_count
+                    or self.ahead or self.behind or self.diverged
+                    or self.unpushed_branches or self.no_remote)
 
     @property
     def last_activity_ts(self) -> int:
@@ -142,6 +160,27 @@ def inferred_upstream(repo_path: str, branch: str) -> str | None:
     return ref if r.returncode == 0 else None
 
 
+def unpushed_branches(repo_path: str) -> list[str]:
+    """Local branches with at least one commit that no remote-tracking ref has.
+
+    One cheap call answers the common case (nothing unpushed anywhere); only
+    then is each branch checked. "Not on any remote" rather than "ahead of its
+    upstream" so a branch that was never pushed, or has no upstream set, still
+    counts — that is exactly the work that otherwise exists on one disk only.
+    """
+    r = _git(repo_path, "rev-list", "--count", "--branches", "--not", "--remotes")
+    if r.returncode != 0 or not r.stdout.strip().isdigit() or int(r.stdout) == 0:
+        return []
+    r = _git(repo_path, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    found = []
+    for branch in r.stdout.split():
+        c = _git(repo_path, "rev-list", "--count", f"refs/heads/{branch}",
+                 "--not", "--remotes")
+        if c.returncode == 0 and c.stdout.strip().isdigit() and int(c.stdout) > 0:
+            found.append(branch)
+    return found
+
+
 def _fetch(repo_path: str, timeout: int) -> str | None:
     """Fetch the default remote; the first line of the failure, else None."""
     try:
@@ -197,6 +236,14 @@ def scan_one(repo: RepoInfo, fetch: bool = False) -> RepoStatus:
                     status.has_remote = True
                     status.inferred_upstream = ref
         status.diverged = status.ahead > 0 and status.behind > 0
+        r = _git(repo.path, "remote")
+        status.no_remote = r.returncode == 0 and not r.stdout.split()
+        # The checked-out branch's own unpushed commits already show as ahead
+        # when it has a remote counterpart; list it only when it has none.
+        status.unpushed_branches = [
+            b for b in unpushed_branches(repo.path)
+            if not (b == status.branch and status.has_remote)
+        ]
         status.last_worktree_ts = newest_mtime(repo.path, changed_paths)
 
         # One call: last commit hash + subject + committer timestamp (separated by US char)

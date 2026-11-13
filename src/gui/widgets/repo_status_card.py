@@ -167,6 +167,11 @@ class RepoStatusCard(QWidget):
                 parts.append(f"{status.behind} behind")
             if status.diverged:
                 parts.append("DIVERGED")
+            if status.unpushed_branches:
+                n = len(status.unpushed_branches)
+                parts.append(f"{n} unpushed branch" + ("" if n == 1 else "es"))
+            if status.no_remote:
+                parts.append("no remote")
             if status.stash_count:
                 parts.append(f"{status.stash_count} stash")
             if not parts:
@@ -178,6 +183,13 @@ class RepoStatusCard(QWidget):
         tips = []
         if status.fetch_error:
             tips.append(f"Fetch failed: {status.fetch_error}")
+        if status.unpushed_branches:
+            tips.append("Only on this disk (Push sends them): "
+                        + ", ".join(status.unpushed_branches))
+        if status.no_remote:
+            tips.append("No remote configured: nothing here is backed up")
+        if status.stash_count:
+            tips.append("Stashed changes are local only: apply and commit them")
         if status.inferred_upstream:
             tips.append(f"No upstream configured; compared with "
                         f"{status.inferred_upstream} (Push/Sync will set it)")
@@ -188,13 +200,14 @@ class RepoStatusCard(QWidget):
             self.dot.set_color(COLOR_ERROR)
         elif status.diverged:
             self.dot.set_color(COLOR_ERROR)
-        elif status.dirty:
+        elif status.dirty or status.stash_count:
             self.dot.set_color(COLOR_DIRTY)
-        elif status.ahead:
+        elif status.ahead or status.unpushed_branches or status.no_remote:
             self.dot.set_color(COLOR_AHEAD)
         elif status.behind:
             self.dot.set_color(COLOR_BEHIND)
         else:
+            # Green means everything here is on the remote (matches_remote).
             self.dot.set_color(COLOR_CLEAN)
 
         # Last commit hash

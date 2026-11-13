@@ -6,7 +6,7 @@ from PySide6.QtCore import QThread, Signal
 
 from src.constants import PYC_SKIP_DIRS
 from src.core.logger import log
-from src.core.repo_scanner import inferred_upstream
+from src.core.repo_scanner import inferred_upstream, unpushed_branches
 
 
 def pyc_cleanup(repo_path: str) -> int:
@@ -93,10 +93,59 @@ def ensure_upstream(repo_path: str) -> str:
     return f"Set upstream to {ref}\n" if ok else f"Couldn't set upstream to {ref}: {out}\n"
 
 
+def _push_remote(repo_path: str) -> str | None:
+    """The remote new branches go to: origin, or the only remote; else None."""
+    ok, out = _run_git(repo_path, "remote")
+    remotes = out.split() if ok else []
+    if "origin" in remotes:
+        return "origin"
+    return remotes[0] if len(remotes) == 1 else None
+
+
 def push_repo(repo_path: str) -> tuple[bool, str]:
-    note = ensure_upstream(repo_path)
-    ok, out = _run_git(repo_path, "push", timeout=60)
-    return ok, note + out
+    """Send everything this disk has that the remote doesn't, without forcing.
+
+    The checked-out branch is pushed when it is ahead of its upstream and not
+    behind (a behind or diverged branch is left for a pull/merge). Then every
+    other local branch holding commits no remote has is pushed: to its own
+    upstream if it has one, else to the default remote with -u so it tracks.
+    A push git rejects (non-fast-forward) is reported, never forced.
+    """
+    out_lines = [ensure_upstream(repo_path).rstrip("\n")]
+    all_ok = True
+    _, current = _run_git(repo_path, "symbolic-ref", "--short", "-q", "HEAD")
+    has_upstream = _run_git(repo_path, "rev-parse", "--abbrev-ref", "@{u}")[0]
+    if has_upstream:
+        ok, counts = _run_git(repo_path, "rev-list", "--left-right", "--count",
+                              "HEAD...@{u}")
+        ahead, behind = (int(x) for x in counts.split()) if ok else (0, 0)
+        if ahead and not behind:
+            ok, out = _run_git(repo_path, "push", timeout=60)
+            all_ok &= ok
+            out_lines.append(out)
+        elif behind:
+            out_lines.append(f"{current}: behind its remote — pull first, not pushed")
+
+    others = [b for b in unpushed_branches(repo_path)
+              if not (b == current and has_upstream)]
+    remote = _push_remote(repo_path) if others else None
+    for branch in others:
+        ok, up = _run_git(repo_path, "for-each-ref",
+                          "--format=%(upstream:remotename) %(upstream:lstrip=3)",
+                          f"refs/heads/{branch}")
+        up_remote, _, up_branch = up.strip().partition(" ")
+        if up_remote and up_branch:
+            args = ["push", up_remote, f"refs/heads/{branch}:refs/heads/{up_branch}"]
+        elif remote:
+            args = ["push", "-u", remote, f"refs/heads/{branch}:refs/heads/{branch}"]
+        else:
+            all_ok = False
+            out_lines.append(f"{branch}: no remote to push to")
+            continue
+        ok, out = _run_git(repo_path, *args, timeout=60)
+        all_ok &= ok
+        out_lines.append(f"{branch}: {out}")
+    return all_ok, "\n".join(l for l in out_lines if l) or "Nothing to push"
 
 
 def fetch_repo(repo_path: str) -> tuple[bool, str]:

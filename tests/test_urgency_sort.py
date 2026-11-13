@@ -22,7 +22,9 @@ def test_full_ladder_is_strictly_ordered():
         rank(behind=1),
         rank(modified_count=1),
         rank(ahead=1),
+        rank(unpushed_branches=["side"]),
         rank(untracked_count=1),
+        rank(stash_count=1),
         rank(),  # clean
     ]
     assert ranks == sorted(ranks)
