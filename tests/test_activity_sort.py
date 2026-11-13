@@ -89,3 +89,31 @@ def test_scan_counts_uncommitted_edits_as_activity(tmp_path):
     dirty = scan_one(RepoInfo(path=str(tmp_path), label="t"))
     assert dirty.last_worktree_ts == 2_000_000_000
     assert dirty.last_activity_ts == 2_000_000_000
+
+
+def test_activity_counts_a_newer_commit_on_another_branch():
+    s = RepoStatus(path="x", label="x", last_commit_ts=100, newest_branch_ts=500)
+    assert s.last_activity_ts == 500
+
+
+def _commit_at(path, name, iso):
+    (path / name).write_text(name)
+    _git(path, "add", name)
+    env = {**os.environ, "GIT_COMMITTER_DATE": iso, "GIT_AUTHOR_DATE": iso}
+    subprocess.run(["git", "-C", str(path), "commit", "-qm", name],
+                   check=True, capture_output=True, env=env)
+
+
+def test_scan_ranks_by_the_newest_branch_not_just_head(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _commit_at(tmp_path, "a", "2001-01-01T00:00:00Z")
+    _git(tmp_path, "switch", "-q", "-c", "feature")
+    _commit_at(tmp_path, "b", "2010-01-01T00:00:00Z")
+    _git(tmp_path, "switch", "-q", "main")
+
+    s = scan_one(RepoInfo(path=str(tmp_path), label="t"))
+    assert s.last_commit_ts == 978307200          # HEAD (main) is old
+    assert s.newest_branch_ts == 1262304000       # feature is newer
+    assert s.last_activity_ts == 1262304000

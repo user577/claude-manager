@@ -39,6 +39,10 @@ class RepoStatus:
     # don't compare correctly as text. Committer, not author, time so a rebase
     # or a pulled fork commit counts as recent activity.
     last_commit_ts: int = 0
+    # Committer time of the newest commit on ANY branch, local or remote. Work
+    # often lands on a feature branch while the checked-out one sits still, so
+    # HEAD's time alone ranks a repo worked on today as months old.
+    newest_branch_ts: int = 0
     # Newest mtime among uncommitted changes (modified, staged, untracked), so
     # today's unsaved-to-git work counts as recent. 0 when the tree is clean.
     last_worktree_ts: int = 0
@@ -64,8 +68,10 @@ class RepoStatus:
 
     @property
     def last_activity_ts(self) -> int:
-        """Latest of the last commit and any uncommitted change. Sort key."""
-        return max(self.last_commit_ts, self.last_worktree_ts)
+        """Latest of the newest commit on any branch and any uncommitted
+        change. Sort key."""
+        return max(self.last_commit_ts, self.newest_branch_ts,
+                   self.last_worktree_ts)
 
 
 # Porcelain v2 entry lines carry a fixed number of space-separated fields
@@ -255,6 +261,14 @@ def scan_one(repo: RepoInfo, fetch: bool = False) -> RepoStatus:
             status.last_commit_ts = int(ts) if ts.isdigit() else 0
         else:
             status.last_commit = out
+
+        # One call: the newest committer time across every local and remote
+        # branch. Remote-tracking refs update on fetch, so a branch pushed
+        # from another PC moves the repo up too.
+        r = _git(repo.path, "for-each-ref", "--sort=-committerdate", "--count=1",
+                 "--format=%(committerdate:unix)", "refs/heads", "refs/remotes")
+        ts = r.stdout.strip()
+        status.newest_branch_ts = int(ts) if ts.isdigit() else 0
 
         r = _git(repo.path, "stash", "list")
         if r.returncode == 0:
